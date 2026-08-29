@@ -40,9 +40,19 @@ export async function sendVerificationEmail(to: string, code: string) {
     console.log(`📧 [MOCK EMAIL] to=${to} code=${code} — SMTP 미설정으로 실제 발송 안 함 (콘솔/응답으로 확인)`);
     return { mocked: true, code };
   }
-  await tx.sendMail({ from, to, subject, html, text });
-  console.log(`📧 [EMAIL] 인증 코드 발송됨 to=${to} code=${code}`);
-  return { mocked: false };
+  try {
+    // 8초 타임아웃 — Render 무료 인스턴스에서 Gmail SMTP 블로킹 시 무한 대기 방지
+    await Promise.race([
+      tx.sendMail({ from, to, subject, html, text }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("SMTP 타임아웃(8초) — Render 네트워크/앱비밀번호 확인 필요")), 8000)),
+    ]);
+    console.log(`📧 [EMAIL] 인증 코드 발송됨 to=${to} code=${code}`);
+    return { mocked: false };
+  } catch (e: any) {
+    console.error(`❌ [EMAIL] 발송 실패 to=${to} code=${code} error=${e.message} — 화면에 코드 표시로 폴백`);
+    // 실패해도 가입 진행 가능하도록 코드 반환 (모킹 폴백)
+    return { mocked: true, code, error: e.message };
+  }
 }
 
 export async function sendAccountInfoEmail(to: string, usernames: string[]) {
@@ -61,8 +71,16 @@ export async function sendAccountInfoEmail(to: string, usernames: string[]) {
     console.log(`📧 [MOCK EMAIL] 아이디 찾기 to=${to} usernames=${usernames.join(",")}`);
     return { mocked: true, usernames };
   }
-  await tx.sendMail({ from, to, subject, html });
-  return { mocked: false };
+  try {
+    await Promise.race([
+      tx.sendMail({ from, to, subject, html }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("SMTP 타임아웃")), 8000)),
+    ]);
+    return { mocked: false };
+  } catch (e: any) {
+    console.error(`❌ [EMAIL] 아이디 찾기 발송 실패: ${e.message}`);
+    return { mocked: true, usernames, error: e.message };
+  }
 }
 
 export async function sendPasswordResetEmail(to: string, username: string, resetCode: string) {
@@ -80,6 +98,14 @@ export async function sendPasswordResetEmail(to: string, username: string, reset
     console.log(`📧 [MOCK EMAIL] 비번 재설정 to=${to} user=${username} code=${resetCode}`);
     return { mocked: true, code: resetCode };
   }
-  await tx.sendMail({ from, to, subject, html });
-  return { mocked: false };
+  try {
+    await Promise.race([
+      tx.sendMail({ from, to, subject, html }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("SMTP 타임아웃")), 8000)),
+    ]);
+    return { mocked: false };
+  } catch (e: any) {
+    console.error(`❌ [EMAIL] 비번 재설정 발송 실패: ${e.message}`);
+    return { mocked: true, code: resetCode, error: e.message };
+  }
 }
