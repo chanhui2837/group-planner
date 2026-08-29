@@ -51,6 +51,9 @@ export default function Dashboard() {
   // location / map
   const [membersLoc, setMembersLoc] = useState<any[]>([]);
   const [sharing, setSharing] = useState(false);
+  const [isTracking, setIsTracking] = useState(false);
+  const watchIdRef = useRef<number | null>(null);
+  const lastSentRef = useRef<{ lat: number; lng: number; t: number } | null>(null);
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<any>(null);
 
@@ -74,21 +77,27 @@ export default function Dashboard() {
     return () => clearTimeout(t);
   }, [searchQ, user, group]);
 
-  // fetch weather by geo
+  // fetch weather by geo — 고정 도시 없음, 실제 기기 위치만 사용
   const [weatherError, setWeatherError] = useState<string | null>(null);
+  const [geoError, setGeoError] = useState<string | null>(null);
   useEffect(() => {
     if (!coords) {
       if ("geolocation" in navigator) {
         navigator.geolocation.getCurrentPosition(
-          (p) => setCoords({ lat: p.coords.latitude, lng: p.coords.longitude }),
+          (p) => {
+            setGeoError(null);
+            setCoords({ lat: p.coords.latitude, lng: p.coords.longitude });
+          },
           (err) => {
             console.warn("[geo] 위치 가져오기 실패:", err.message);
-            // 춘천 기본값 (서울 대신)
-            setCoords({ lat: 37.8813, lng: 127.7298 });
+            // 고정 금지: 사용자에게 권한 안내만, 자동 도시 고정 안 함
+            if (err.code === 1) setGeoError("위치 권한이 거부됐어요. 브라우저 주소창 🔒 > 위치 허용 후 ‘내 위치’ 버튼을 누르세요.");
+            else setGeoError(`위치 조회 실패: ${err.message}`);
+            // coords는 null 유지 — 지도는 대한민국 중심(36.5,127.5) + 날씨도 수동 선택 안내
           },
           { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
         );
-      } else setCoords({ lat: 37.8813, lng: 127.7298 });
+      } else setGeoError("이 기기는 위치 기능을 지원하지 않아요.");
     }
   }, [coords]);
 
@@ -195,7 +204,7 @@ export default function Dashboard() {
         mapInstance.current.remove();
         mapInstance.current = null;
       }
-      // 중심: 멤버 위치 평균 → 내 위치 → 춘천
+      // 중심: 멤버 위치 평균 → 내 실제 기기 위치 → 대한민국 중심 (고정 도시 없음)
       const validLocs = membersLoc.filter((m: any) => m.location && typeof m.location.lat === "number");
       let center: [number, number];
       if (validLocs.length > 0) {
@@ -205,7 +214,7 @@ export default function Dashboard() {
       } else if (coords) {
         center = [coords.lat, coords.lng];
       } else {
-        center = [37.8813, 127.7298]; // 춘천 시청
+        center = [36.5, 127.5]; // 대한민국 중심 — 특정 도시 고정 아님
       }
       const map = L.map(mapRef.current).setView(center, validLocs.length > 0 ? 11 : 12);
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap" }).addTo(map);
@@ -376,7 +385,7 @@ export default function Dashboard() {
   const shareLocation = async () => {
     if (!("geolocation" in navigator)) return alert("위치 기능을 지원하지 않는 기기예요");
     setSharing(true);
-    const doShare = async (latitude: number, longitude: number) => {
+    const doShare = async (latitude: number, longitude: number, showAlarm = true) => {
       let address = "";
       try {
         const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`);
@@ -394,7 +403,7 @@ export default function Dashboard() {
       const r2 = await fetch("/api/location");
       const d2 = await r2.json();
       setMembersLoc(d2.members || []);
-      triggerAlarm({ title: "📍 위치 공유 완료", body: `위치가 저장됐어요! (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`, type: "schedule" });
+      if (showAlarm) triggerAlarm({ title: "📍 위치 공유 완료", body: `위치가 저장됐어요! (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`, type: "schedule" });
       setTab("map");
     };
     navigator.geolocation.getCurrentPosition(
@@ -415,6 +424,75 @@ export default function Dashboard() {
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
     );
   };
+
+  // 실시간 이동 추적 - 핸드폰 들고 이동하면 자동 갱신
+  const toggleTracking = () => {
+    if (isTracking) {
+      if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+      setIsTracking(false);
+      console.log("[geo] 실시간 추적 중지");
+      return;
+    }
+    if (!("geolocation" in navigator)) return alert("위치 기능 미지원 기기예요");
+    if (!group) return alert("그룹에 먼저 가입하세요");
+    setIsTracking(true);
+    console.log("[geo] 실시간 추적 시작 - 5초/10m 마다 MongoDB에 자동 저장");
+    // 즉시 한 번 공유
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const la = pos.coords.latitude, lo = pos.coords.longitude;
+        lastSentRef.current = { lat: la, lng: lo, t: Date.now() };
+        fetch("/api/location", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lat: la, lng: lo, address: "" }) }).then(() => {
+          setCoords({ lat: la, lng: lo });
+        });
+      },
+      () => {}
+    );
+    const id = navigator.geolocation.watchPosition(
+      async (pos) => {
+        const la = pos.coords.latitude, lo = pos.coords.longitude;
+        const now = Date.now();
+        const last = lastSentRef.current;
+        // 5초 이내 & 10m 이내면 스킵 (배터리/DB 절약)
+        if (last) {
+          const dt = now - last.t;
+          const dLat = la - last.lat, dLng = lo - last.lng;
+          const dist = Math.sqrt(dLat * dLat + dLng * dLng) * 111000; // 대략 m
+          if (dt < 5000 && dist < 10) return;
+        }
+        lastSentRef.current = { lat: la, lng: lo, t: now };
+        let address = "";
+        try {
+          const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${la}&lon=${lo}`);
+          const j = await r.json();
+          address = j.display_name || "";
+        } catch {}
+        await fetch("/api/location", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lat: la, lng: lo, address }) });
+        setCoords({ lat: la, lng: lo });
+        console.log(`📍 [실시간] 위치 자동 갱신: ${la.toFixed(5)},${lo.toFixed(5)}`);
+        // 지도 탭이 아니면 membersLoc 갱신은 폴링(4초)이 처리, 지도면 즉시 반영
+        if (tab === "map") {
+          const r2 = await fetch("/api/location");
+          const d2 = await r2.json();
+          setMembersLoc(d2.members || []);
+        }
+      },
+      (err) => {
+        console.warn("[geo] watch fail", err);
+        setIsTracking(false);
+        if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+        alert("실시간 추적 실패: " + err.message);
+      },
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+    );
+    watchIdRef.current = id as unknown as number;
+  };
+  useEffect(() => {
+    return () => {
+      if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+    };
+  }, []);
   const shareChuncheon = async () => {
     setSharing(true);
     const lat = 37.8813, lng = 127.7298;
@@ -880,14 +958,19 @@ export default function Dashboard() {
                     <h3 className="font-black flex items-center gap-2">🗺️ 가족 위치 공유</h3>
                     <p className="text-xs text-[#636E72] mt-1">지도에서 우리 가족이 지금 어디에 있는지 확인해요. 위치는 실시간으로 업데이트돼요.</p>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 flex-wrap">
                     <button onClick={shareLocation} disabled={sharing} className="px-5 py-3 rounded-2xl bg-[#4ECDC4] text-white font-black text-sm shadow disabled:opacity-60">
-                      {sharing ? "공유 중..." : "📍 내 위치 공유하기"}
+                      {sharing ? "공유 중..." : "📍 내 위치 1회 공유"}
                     </button>
-                    <button onClick={shareChuncheon} disabled={sharing} className="px-4 py-3 rounded-2xl bg-[#FFE66D] text-[#2D3436] font-black text-sm shadow border border-[#FFD54F] disabled:opacity-60">
-                      춘천으로 설정
+                    <button onClick={toggleTracking} className={`px-5 py-3 rounded-2xl font-black text-sm shadow border ${isTracking ? "bg-[#FF6B6B] text-white border-[#FF6B6B] animate-pulse" : "bg-[#FFE66D] text-[#2D3436] border-[#FFD54F]"}`}>
+                      {isTracking ? "⏸️ 실시간 추적 중지" : "▶️ 실시간 이동 추적"}
+                    </button>
+                    <button onClick={shareChuncheon} disabled={sharing} className="px-4 py-3 rounded-2xl bg-white text-[#636E72] font-black text-sm shadow border border-[#FFE0CC] disabled:opacity-60" title="테스트용 - 춘천 시청 좌표로 저장">
+                      🧪 춘천 테스트
                     </button>
                   </div>
+                  {geoError && <div className="mt-2 text-xs bg-[#FFE3E3] text-[#C0392B] px-3 py-2 rounded-xl font-bold">{geoError}</div>}
+                  {isTracking && <div className="mt-2 text-xs font-bold text-[#FF6B6B] flex items-center gap-1.5"><span className="w-2 h-2 bg-[#FF6B6B] rounded-full animate-ping" /> 핸드폰 들고 이동하면 5초/10m 마다 MongoDB에 자동 저장 → 지도에 프로필/이름 실시간 이동!</div>}
                 </div>
                 {coords && <div className="px-4 py-2 bg-[#FFF8F0] border-b border-[#FFE0CC] text-xs flex items-center gap-2"><span className="w-2 h-2 bg-[#00B894] rounded-full animate-pulse" /> 현재 기준: {coords.lat.toFixed(4)}, {coords.lng.toFixed(4)} {Math.abs(coords.lat-37.8813)<0.01 ? "(춘천)" : Math.abs(coords.lat-37.5665)<0.01 ? "(서울 - 권한 거부 시 기본값)" : ""} <button onClick={() => setCoords(null)} className="ml-auto text-[#FF6B6B] font-bold underline">다시 가져오기</button></div>}
                 <div ref={mapRef} className="w-full h-[420px] bg-[#E8F5F3] relative" />
