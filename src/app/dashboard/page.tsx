@@ -650,10 +650,10 @@ export default function Dashboard() {
         <Logo size={34} />
         <div className="hidden sm:block h-6 w-px bg-[#FFE0CC] mx-2" />
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <div className="w-2.5 h-2.5 rounded-full animate-pulse" style={{ background: group.color }} />
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="w-2.5 h-2.5 rounded-full animate-pulse shrink-0" style={{ background: group.color }} />
             <h1 className="font-black text-sm sm:text-base truncate">{group.name}</h1>
-            <span className="hidden sm:inline text-xs bg-[#FFE8D6] text-[#FF6B6B] font-black px-2 py-0.5 rounded-full">#{group.inviteCode}</span>
+            <span className="inline-flex text-xs bg-[#FFE8D6] text-[#FF6B6B] font-black px-2 py-0.5 rounded-full">#{group.inviteCode}</span>
             <span className="text-xs text-[#636E72] font-bold">· {group.memberCount}/10</span>
           </div>
           <div className="text-xs text-[#636E72] truncate hidden sm:block">{group.description || "함께하는 가족 그룹"}</div>
@@ -665,9 +665,10 @@ export default function Dashboard() {
               navigator.clipboard.writeText(group.inviteCode);
               triggerAlarm({ title: "📋 복사 완료!", body: `초대코드 ${group.inviteCode}가 복사됐어요. 가족에게 공유해보세요!`, type: "schedule" });
             }}
-            className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#FFF0E6] border border-[#FFE0CC] text-xs font-bold text-[#FF6B6B]"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#FFF0E6] border border-[#FFE0CC] text-xs font-bold text-[#FF6B6B] shrink-0"
           >
-            🔗 초대코드 복사
+            <span className="hidden sm:inline">🔗 초대코드 복사</span>
+            <span className="sm:hidden">복사</span>
           </button>
 
           <div className="relative">

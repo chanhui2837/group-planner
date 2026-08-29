@@ -18,6 +18,7 @@ export default function AuthPage() {
   const [sending, setSending] = useState(false);
   const [verifying, setVerifying] = useState(false);
   const [verifyMsg, setVerifyMsg] = useState("");
+  const [mockedCode, setMockedCode] = useState<string | null>(null);
   const [countdown, setCountdown] = useState(0);
 
   // find/reset modals
@@ -41,6 +42,7 @@ export default function AuthPage() {
     setVerified(false);
     setCode("");
     setVerifyMsg("");
+    setMockedCode(null);
   }, [form.email]);
 
   const sendCode = async () => {
@@ -50,15 +52,17 @@ export default function AuthPage() {
     }
     setSending(true);
     setVerifyMsg("");
+    setMockedCode(null);
     try {
       const res = await fetch("/api/auth/send-code", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: form.email }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "발송 실패");
       setCountdown(30);
       if (data.mocked && data.code) {
-        setVerifyMsg(`개발 모드: 코드=${data.code} (5분 유효, 서버 로그에도 표시)`);
+        setMockedCode(data.code);
+        setVerifyMsg(`📧 SMTP 미설정 — 실제 메일 대신 화면에 코드가 표시됩니다 (Render 로그에도 기록)`);
       } else {
-        setVerifyMsg(data.message || "인증 코드가 발송됐어요. 5분 안에 입력하세요");
+        setVerifyMsg(data.message || "인증 코드가 이메일로 발송됐어요. 5분 안에 입력하세요");
       }
     } catch (e: any) {
       setVerifyMsg(e.message);
@@ -304,6 +308,16 @@ export default function AuthPage() {
                     </button>
                   </div>
                   {verifyMsg && <div className={`mt-2 text-xs font-bold px-3 py-2 rounded-xl ${verified ? "bg-[#E0F7F4] text-[#00B894]" : "bg-[#FFF0E6] text-[#636E72]"}`}>{verifyMsg}</div>}
+                  {mockedCode && !verified && (
+                    <div className="mt-2 p-3 rounded-2xl bg-[#FFF8F0] border-2 border-dashed border-[#FF6B6B] flex items-center justify-between">
+                      <div>
+                        <div className="text-[11px] font-bold text-[#636E72]">📧 실제 메일 대신 화면 코드</div>
+                        <div className="text-[20px] font-black tracking-[0.3em] text-[#FF6B6B]">{mockedCode}</div>
+                        <div className="text-[11px] text-[#B2BEC3]">5분 유효 • 이 코드를 위에 입력 → 인증</div>
+                      </div>
+                      <button type="button" onClick={() => { setCode(mockedCode); navigator.clipboard.writeText(mockedCode); }} className="px-3 py-2 rounded-xl bg-[#FF6B6B] text-white text-xs font-black">복사</button>
+                    </div>
+                  )}
                   {verified && <div className="mt-1 text-[11px] text-[#00B894] font-bold">✓ 하나의 이메일로 여러 아이디 생성이 가능해요 (10분 유효)</div>}
                 </div>
               )}
