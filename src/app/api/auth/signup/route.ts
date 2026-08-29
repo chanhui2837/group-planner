@@ -16,17 +16,20 @@ export async function POST(req: NextRequest) {
     if (password.length < 4) return NextResponse.json({ error: "비밀번호는 4글자 이상" }, { status: 400 });
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return NextResponse.json({ error: "올바른 이메일 형식" }, { status: 400 });
 
-    const existingUser = await User.findOne({ $or: [{ username }, { email }] });
+    const normalizedEmail = email.toLowerCase().trim();
+    const normalizedUsername = username.trim();
+    const existingUser = await User.findOne({ $or: [{ username: normalizedUsername }, { email: normalizedEmail }] });
     if (existingUser) {
-      if (existingUser.username === username) return NextResponse.json({ error: "이미 사용 중인 아이디입니다." }, { status: 409 });
-      return NextResponse.json({ error: "이미 사용 중인 이메일입니다." }, { status: 409 });
+      if (existingUser.username === normalizedUsername) return NextResponse.json({ error: "이미 사용 중인 아이디입니다." }, { status: 409 });
+      if (existingUser.email === normalizedEmail) return NextResponse.json({ error: "이미 사용 중인 이메일입니다." }, { status: 409 });
+      return NextResponse.json({ error: `이미 사용 중: ${existingUser.username === normalizedUsername ? "아이디" : "이메일"}` }, { status: 409 });
     }
 
     const hashed = await bcrypt.hash(password, 10);
     const user = await User.create({
-      realName,
-      username,
-      email,
+      realName: realName.trim(),
+      username: normalizedUsername,
+      email: normalizedEmail,
       password: hashed,
       avatar: "",
     });
@@ -44,8 +47,13 @@ export async function POST(req: NextRequest) {
     res.cookies.set("token", token, { httpOnly: true, sameSite: "lax", path: "/", maxAge: 60 * 60 * 24 * 30 });
     return res;
   } catch (e: any) {
-    console.error(e);
-    if (e.code === 11000) return NextResponse.json({ error: "중복된 아이디/이메일" }, { status: 409 });
+    console.error("❌ [DB] 회원가입 저장 실패:", e.message, "code=", e.code, "keyValue=", e.keyValue, "keyPattern=", e.keyPattern);
+    if (e.code === 11000) {
+      const field = e.keyPattern ? Object.keys(e.keyPattern).join(", ") : e.keyValue ? Object.keys(e.keyValue).join(", ") : "아이디/이메일";
+      const dupVal = e.keyValue ? JSON.stringify(e.keyValue) : "";
+      console.log(`❌ [DB] 중복 키: field=${field} value=${dupVal}`);
+      return NextResponse.json({ error: `중복된 ${field} 입니다. ${dupVal}` }, { status: 409 });
+    }
     return NextResponse.json({ error: "회원가입 실패: " + e.message }, { status: 500 });
   }
 }
