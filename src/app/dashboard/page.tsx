@@ -75,24 +75,34 @@ export default function Dashboard() {
   }, [searchQ, user, group]);
 
   // fetch weather by geo
+  const [weatherError, setWeatherError] = useState<string | null>(null);
   useEffect(() => {
     if (!coords) {
       if ("geolocation" in navigator) {
         navigator.geolocation.getCurrentPosition(
           (p) => setCoords({ lat: p.coords.latitude, lng: p.coords.longitude }),
-          () => setCoords({ lat: 37.5665, lng: 126.978 }),
-          { enableHighAccuracy: false }
+          (err) => {
+            console.warn("[geo] 위치 가져오기 실패:", err.message);
+            // 춘천 기본값 (서울 대신)
+            setCoords({ lat: 37.8813, lng: 127.7298 });
+          },
+          { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
         );
-      } else setCoords({ lat: 37.5665, lng: 126.978 });
+      } else setCoords({ lat: 37.8813, lng: 127.7298 });
     }
   }, [coords]);
 
   useEffect(() => {
     if (!coords) return;
     setWeatherLoading(true);
+    setWeatherError(null);
     fetch(`/api/weather?lat=${coords.lat}&lon=${coords.lng}`)
       .then((r) => r.json())
-      .then((d) => setWeather(d))
+      .then((d) => {
+        if (d.error) setWeatherError(d.error);
+        else setWeather(d);
+      })
+      .catch((e) => setWeatherError(e.message))
       .finally(() => setWeatherLoading(false));
   }, [coords]);
 
@@ -164,45 +174,74 @@ export default function Dashboard() {
     let cancelled = false;
     (async () => {
       if (!L) {
-        // load leaflet css & js via CDN
         const link = document.createElement("link");
         link.rel = "stylesheet";
         link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
         document.head.appendChild(link);
         const mod = await import("leaflet");
         L = mod.default || mod;
+        // fix default icon path (leaflet CDN)
+        try {
+          delete (L.Icon.Default.prototype as any)._getIconUrl;
+          L.Icon.Default.mergeOptions({
+            iconRetinaUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
+            iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
+            shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
+          });
+        } catch {}
       }
       if (cancelled || !mapRef.current) return;
       if (mapInstance.current) {
         mapInstance.current.remove();
         mapInstance.current = null;
       }
-      const center: [number, number] = coords ? [coords.lat, coords.lng] : [37.5665, 126.978];
-      const map = L.map(mapRef.current).setView(center, 12);
+      // 중심: 멤버 위치 평균 → 내 위치 → 춘천
+      const validLocs = membersLoc.filter((m: any) => m.location && typeof m.location.lat === "number");
+      let center: [number, number];
+      if (validLocs.length > 0) {
+        const avgLat = validLocs.reduce((s: number, m: any) => s + m.location.lat, 0) / validLocs.length;
+        const avgLng = validLocs.reduce((s: number, m: any) => s + m.location.lng, 0) / validLocs.length;
+        center = [avgLat, avgLng];
+      } else if (coords) {
+        center = [coords.lat, coords.lng];
+      } else {
+        center = [37.8813, 127.7298]; // 춘천 시청
+      }
+      const map = L.map(mapRef.current).setView(center, validLocs.length > 0 ? 11 : 12);
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap" }).addTo(map);
       mapInstance.current = map;
 
-      // add markers for members
-      membersLoc.forEach((m) => {
-        if (!m.location) return;
+      // add markers for members - 프로필/이름 항상 표시
+      validLocs.forEach((m: any) => {
         const isMe = m.id === user?.id;
+        const initials = (m.realName || "?").slice(0, 1);
+        const avatarHtml = m.avatar ? `<img src="${m.avatar}" style="width:100%;height:100%;object-fit:cover"/>` : `<span style="font-weight:900;color:${isMe ? "#FF6B6B" : "#4ECDC4"}">${initials}</span>`;
         const icon = L.divIcon({
-          html: `<div style="display:flex;flex-direction:column;align-items:center;gap:2px">
-            <div style="width:44px;height:44px;border-radius:50%;border:3px solid ${isMe ? "#FF6B6B" : "#4ECDC4"};overflow:hidden;background:white;box-shadow:0 4px 12px rgba(0,0,0,0.2);display:flex;align-items:center;justify-content:center;font-size:18px">
-              ${m.avatar ? `<img src="${m.avatar}" style="width:100%;height:100%;object-fit:cover"/>` : m.realName.slice(0, 1)}
+          html: `<div style="display:flex;flex-direction:column;align-items:center;gap:3px;transform:translateY(-8px)">
+            <div style="width:48px;height:48px;border-radius:50%;border:3px solid ${isMe ? "#FF6B6B" : "#4ECDC4"};overflow:hidden;background:white;box-shadow:0 6px 16px rgba(0,0,0,0.25);display:flex;align-items:center;justify-content:center;font-size:20px">
+              ${avatarHtml}
             </div>
-            <span style="background:${isMe ? "#FF6B6B" : "#2D3436"};color:white;font-size:11px;font-weight:800;padding:2px 6px;border-radius:999px;white-space:nowrap">${m.realName}${isMe ? " (나)" : ""}</span>
+            <span style="background:${isMe ? "#FF6B6B" : "#2D3436"};color:white;font-size:11px;font-weight:800;padding:3px 8px;border-radius:999px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.2)">${m.realName}${isMe ? " (나)" : ""}</span>
+            <span style="background:white;color:#636E72;font-size:9px;font-weight:700;padding:1px 6px;border-radius:999px;white-space:nowrap;border:1px solid #FFE0CC">${m.location.address ? m.location.address.split(",").slice(0,2).join(",") : `${m.location.lat.toFixed(3)},${m.location.lng.toFixed(3)}`}</span>
           </div>`,
           className: "",
-          iconSize: [60, 60],
-          iconAnchor: [30, 30],
+          iconSize: [90, 80],
+          iconAnchor: [45, 40],
         });
-        L.marker([m.location.lat, m.location.lng], { icon }).addTo(map).bindPopup(`${m.realName}<br/>${m.location.address || ""}<br/><small>${m.location.updatedAt ? new Date(m.location.updatedAt).toLocaleString() : ""}</small>`);
+        L.marker([m.location.lat, m.location.lng], { icon }).addTo(map).bindPopup(`<b>${m.realName}${isMe ? " (나)" : ""}</b><br/>${m.location.address || `${m.location.lat.toFixed(5)}, ${m.location.lng.toFixed(5)}`}<br/><small>${m.location.updatedAt ? new Date(m.location.updatedAt).toLocaleString() : ""}</small>`);
       });
 
-      // current user marker if no location yet
-      if (coords && membersLoc.length === 0) {
-        L.marker(center).addTo(map).bindPopup("내 위치 (공유 전)");
+      // 위치 미공유 안내 마커 (서울→춘천으로 수정)
+      if (validLocs.length === 0) {
+        const msg = coords ? `내 위치 (공유 전) - ${coords.lat.toFixed(4)},${coords.lng.toFixed(4)}<br/><small>“내 위치 공유하기”를 눌러 춘천 위치를 공유하세요</small>` : "위치를 공유해보세요";
+        L.marker(center).addTo(map).bindPopup(msg);
+      }
+      // 멤버가 여러 명이면 모두 보이도록 bounds 조정
+      if (validLocs.length > 1) {
+        try {
+          const group = new L.featureGroup(validLocs.map((m: any) => L.marker([m.location.lat, m.location.lng])));
+          map.fitBounds(group.getBounds().pad(0.2));
+        } catch {}
       }
     })();
     return () => {
@@ -337,33 +376,64 @@ export default function Dashboard() {
   const shareLocation = async () => {
     if (!("geolocation" in navigator)) return alert("위치 기능을 지원하지 않는 기기예요");
     setSharing(true);
+    const doShare = async (latitude: number, longitude: number) => {
+      let address = "";
+      try {
+        const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`);
+        const j = await r.json();
+        address = j.display_name || "";
+      } catch {}
+      const res = await fetch("/api/location", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lat: latitude, lng: longitude, address }) });
+      setSharing(false);
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        return alert("위치 공유 실패: " + (d.error || res.statusText));
+      }
+      setCoords({ lat: latitude, lng: longitude });
+      await refresh();
+      const r2 = await fetch("/api/location");
+      const d2 = await r2.json();
+      setMembersLoc(d2.members || []);
+      triggerAlarm({ title: "📍 위치 공유 완료", body: `위치가 저장됐어요! (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`, type: "schedule" });
+      setTab("map");
+    };
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
-        const { latitude, longitude } = pos.coords;
-        // reverse geocode via openstreetmap nominatim
-        let address = "";
-        try {
-          const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`);
-          const j = await r.json();
-          address = j.display_name || "";
-        } catch {}
-        const res = await fetch("/api/location", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lat: latitude, lng: longitude, address }) });
-        setSharing(false);
-        if (!res.ok) return alert("위치 공유 실패");
-        setCoords({ lat: latitude, lng: longitude });
-        await refresh();
-        // refresh members
-        const r2 = await fetch("/api/location");
-        const d2 = await r2.json();
-        setMembersLoc(d2.members || []);
-        triggerAlarm({ title: "📍 위치 공유 완료", body: "지도에서 내 위치를 확인할 수 있어요!", type: "schedule" });
+        await doShare(pos.coords.latitude, pos.coords.longitude);
       },
       (err) => {
         setSharing(false);
-        alert("위치 가져오기 실패: " + err.message);
+        console.warn("[geo] share fail", err);
+        if (err.code === 1) {
+          if (confirm("위치 권한이 거부됐어요. 브라우저 주소창 왼쪽 🔒 > 위치 허용 후 다시 시도하세요. 춘천 시청(37.8813,127.7298)으로 임시 공유할까요?")) {
+            doShare(37.8813, 127.7298);
+          }
+        } else {
+          alert("위치 가져오기 실패: " + err.message + "\n\n팁: 핸드폰 설정 > 위치 서비스 켜기, 브라우저 위치 허용을 확인하세요.");
+        }
       },
-      { enableHighAccuracy: true }
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
     );
+  };
+  const shareChuncheon = async () => {
+    setSharing(true);
+    const lat = 37.8813, lng = 127.7298;
+    let address = "강원특별자치도 춘천시 중앙로 (춘천 시청附近)";
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
+      const j = await r.json();
+      if (j.display_name) address = j.display_name;
+    } catch {}
+    const res = await fetch("/api/location", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lat, lng, address }) });
+    setSharing(false);
+    if (!res.ok) return alert("위치 공유 실패");
+    setCoords({ lat, lng });
+    await refresh();
+    const r2 = await fetch("/api/location");
+    const d2 = await r2.json();
+    setMembersLoc(d2.members || []);
+    triggerAlarm({ title: "📍 춘천 위치 공유 완료", body: "춘천 시청 기준으로 공유됐어요!", type: "schedule" });
+    setTab("map");
   };
 
   const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -810,10 +880,16 @@ export default function Dashboard() {
                     <h3 className="font-black flex items-center gap-2">🗺️ 가족 위치 공유</h3>
                     <p className="text-xs text-[#636E72] mt-1">지도에서 우리 가족이 지금 어디에 있는지 확인해요. 위치는 실시간으로 업데이트돼요.</p>
                   </div>
-                  <button onClick={shareLocation} disabled={sharing} className="px-5 py-3 rounded-2xl bg-[#4ECDC4] text-white font-black text-sm shadow disabled:opacity-60">
-                    {sharing ? "공유 중..." : "📍 내 위치 공유하기"}
-                  </button>
+                  <div className="flex gap-2">
+                    <button onClick={shareLocation} disabled={sharing} className="px-5 py-3 rounded-2xl bg-[#4ECDC4] text-white font-black text-sm shadow disabled:opacity-60">
+                      {sharing ? "공유 중..." : "📍 내 위치 공유하기"}
+                    </button>
+                    <button onClick={shareChuncheon} disabled={sharing} className="px-4 py-3 rounded-2xl bg-[#FFE66D] text-[#2D3436] font-black text-sm shadow border border-[#FFD54F] disabled:opacity-60">
+                      춘천으로 설정
+                    </button>
+                  </div>
                 </div>
+                {coords && <div className="px-4 py-2 bg-[#FFF8F0] border-b border-[#FFE0CC] text-xs flex items-center gap-2"><span className="w-2 h-2 bg-[#00B894] rounded-full animate-pulse" /> 현재 기준: {coords.lat.toFixed(4)}, {coords.lng.toFixed(4)} {Math.abs(coords.lat-37.8813)<0.01 ? "(춘천)" : Math.abs(coords.lat-37.5665)<0.01 ? "(서울 - 권한 거부 시 기본값)" : ""} <button onClick={() => setCoords(null)} className="ml-auto text-[#FF6B6B] font-bold underline">다시 가져오기</button></div>}
                 <div ref={mapRef} className="w-full h-[420px] bg-[#E8F5F3] relative" />
                 <div className="p-3 bg-[#FFFBF5] border-t border-[#FFE0CC] flex flex-wrap gap-2">
                   {membersLoc.map((m) => (
@@ -854,12 +930,14 @@ export default function Dashboard() {
                 <div className="relative">
                   <div className="flex items-start justify-between">
                     <div>
-                      <div className="text-sm font-bold opacity-90">현재 날씨 • {coords ? `${coords.lat.toFixed(2)}, ${coords.lng.toFixed(2)}` : "위치 확인 중"}</div>
+                      <div className="text-sm font-bold opacity-90 flex items-center gap-2">현재 날씨 • {coords ? `${coords.lat.toFixed(2)}, ${coords.lng.toFixed(2)}` : "위치 확인 중"} <button onClick={() => setCoords({ lat: 37.8813, lng: 127.7298 })} className="ml-2 px-2 py-0.5 rounded-full bg-white/20 text-xs">춘천</button><button onClick={() => setCoords({ lat: 37.5665, lng: 126.978 })} className="px-2 py-0.5 rounded-full bg-white/20 text-xs">서울</button><button onClick={() => setCoords(null)} className="px-2 py-0.5 rounded-full bg-white/80 text-[#2D3436] text-xs font-black">내 위치</button></div>
                       {weatherLoading ? (
                         <div className="mt-6 text-white/80">불러오는 중...</div>
+                      ) : weatherError ? (
+                        <div className="mt-4 bg-white/20 rounded-xl px-3 py-2 text-sm">⚠️ 날씨 로드 실패: {weatherError} <button onClick={() => setCoords({ ...coords! })} className="underline ml-2">재시도</button></div>
                       ) : weather?.current ? (
                         <>
-                          <div className="text-[42px] font-black leading-none mt-2">{weather.current.temp}°</div>
+                          <div className="text-[42px] font-black leading-none mt-2">{weather.current.temp ?? "-"}°</div>
                           <div className="text-sm font-bold opacity-90">{weather.current.desc} · 체감 {weather.current.feels}°</div>
                           <div className="mt-3 flex gap-2 text-xs">
                             <span className="bg-white/20 px-3 py-1.5 rounded-full">💧 습도 {weather.current.humidity}%</span>
@@ -867,7 +945,7 @@ export default function Dashboard() {
                           </div>
                         </>
                       ) : (
-                        <div className="mt-4 text-white/80 text-sm">날씨 정보를 불러올 수 없어요</div>
+                        <div className="mt-4 text-white/80 text-sm">날씨 정보를 불러올 수 없어요 — 위치를 허용하거나 춘천 버튼을 눌러보세요</div>
                       )}
                     </div>
                     <div className="text-6xl hidden sm:block">{weather?.current?.code === 0 ? "☀️" : weather?.current?.code === 3 ? "☁️" : weather?.current?.code >= 61 ? "🌧️" : "⛅"}</div>
