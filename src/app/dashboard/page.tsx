@@ -57,6 +57,8 @@ export default function Dashboard() {
   const lastSentRef = useRef<{ lat: number; lng: number; t: number } | null>(null);
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<any>(null);
+  const markerLayerRef = useRef<any>(null);
+  const hasCenteredRef = useRef(false);
 
   // profile
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
@@ -195,7 +197,28 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [dmTarget, group]);
 
-  // leaflet map init
+  // leaflet map — 최초 1회만 중심 설정, 이후엔 마커만 갱신 (옆으로 넘겨도 다시 내 위치로 점프 안 함)
+  const recenterMap = () => {
+    const map = mapInstance.current;
+    if (!map || !L) return;
+    const validLocs = membersLoc.filter((m: any) => m.location && typeof m.location.lat === "number");
+    if (validLocs.length > 0) {
+      const avgLat = validLocs.reduce((s: number, m: any) => s + m.location.lat, 0) / validLocs.length;
+      const avgLng = validLocs.reduce((s: number, m: any) => s + m.location.lng, 0) / validLocs.length;
+      map.setView([avgLat, avgLng], 12);
+      if (validLocs.length > 1) {
+        try {
+          const group = new L.featureGroup(validLocs.map((m: any) => L.marker([m.location.lat, m.location.lng])));
+          map.fitBounds(group.getBounds().pad(0.2));
+        } catch {}
+      }
+    } else if (coords) {
+      map.setView([coords.lat, coords.lng], 12);
+    } else {
+      map.setView([36.5, 127.5], 7);
+    }
+    hasCenteredRef.current = true;
+  };
   useEffect(() => {
     if (tab !== "map" || !mapRef.current) return;
     let cancelled = false;
@@ -207,7 +230,6 @@ export default function Dashboard() {
         document.head.appendChild(link);
         const mod = await import("leaflet");
         L = mod.default || mod;
-        // fix default icon path (leaflet CDN)
         try {
           delete (L.Icon.Default.prototype as any)._getIconUrl;
           L.Icon.Default.mergeOptions({
@@ -218,27 +240,30 @@ export default function Dashboard() {
         } catch {}
       }
       if (cancelled || !mapRef.current) return;
-      if (mapInstance.current) {
-        mapInstance.current.remove();
-        mapInstance.current = null;
+      // 기존 맵이 없으면 최초 생성
+      if (!mapInstance.current) {
+        const validLocs = membersLoc.filter((m: any) => m.location && typeof m.location.lat === "number");
+        let center: [number, number];
+        if (validLocs.length > 0) {
+          const avgLat = validLocs.reduce((s: number, m: any) => s + m.location.lat, 0) / validLocs.length;
+          const avgLng = validLocs.reduce((s: number, m: any) => s + m.location.lng, 0) / validLocs.length;
+          center = [avgLat, avgLng];
+        } else if (coords) {
+          center = [coords.lat, coords.lng];
+        } else {
+          center = [36.5, 127.5];
+        }
+        const map = L.map(mapRef.current).setView(center, validLocs.length > 0 ? 11 : 7);
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap" }).addTo(map);
+        mapInstance.current = map;
+        markerLayerRef.current = L.layerGroup().addTo(map);
+        hasCenteredRef.current = true;
       }
-      // 중심: 멤버 위치 평균 → 내 실제 기기 위치 → 대한민국 중심 (고정 도시 없음)
+      // 마커만 갱신 — 뷰는 건드리지 않음 (옆으로 넘겨도 점프 안 함)
+      const layer = markerLayerRef.current;
+      if (!layer) return;
+      layer.clearLayers();
       const validLocs = membersLoc.filter((m: any) => m.location && typeof m.location.lat === "number");
-      let center: [number, number];
-      if (validLocs.length > 0) {
-        const avgLat = validLocs.reduce((s: number, m: any) => s + m.location.lat, 0) / validLocs.length;
-        const avgLng = validLocs.reduce((s: number, m: any) => s + m.location.lng, 0) / validLocs.length;
-        center = [avgLat, avgLng];
-      } else if (coords) {
-        center = [coords.lat, coords.lng];
-      } else {
-        center = [36.5, 127.5]; // 대한민국 중심 — 특정 도시 고정 아님
-      }
-      const map = L.map(mapRef.current).setView(center, validLocs.length > 0 ? 11 : 12);
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap" }).addTo(map);
-      mapInstance.current = map;
-
-      // add markers for members - 프로필/이름 항상 표시
       validLocs.forEach((m: any) => {
         const isMe = m.id === user?.id;
         const initials = (m.realName || "?").slice(0, 1);
@@ -255,26 +280,46 @@ export default function Dashboard() {
           iconSize: [90, 80],
           iconAnchor: [45, 40],
         });
-        L.marker([m.location.lat, m.location.lng], { icon }).addTo(map).bindPopup(`<b>${m.realName}${isMe ? " (나)" : ""}</b><br/>${m.location.address || `${m.location.lat.toFixed(5)}, ${m.location.lng.toFixed(5)}`}<br/><small>${m.location.updatedAt ? new Date(m.location.updatedAt).toLocaleString() : ""}</small>`);
+        L.marker([m.location.lat, m.location.lng], { icon }).addTo(layer).bindPopup(`<b>${m.realName}${isMe ? " (나)" : ""}</b><br/>${m.location.address || `${m.location.lat.toFixed(5)}, ${m.location.lng.toFixed(5)}`}<br/><small>${m.location.updatedAt ? new Date(m.location.updatedAt).toLocaleString() : ""}</small>`);
       });
-
-      // 위치 미공유 안내 마커 (서울→춘천으로 수정)
       if (validLocs.length === 0) {
-        const msg = coords ? `내 위치 (공유 전) - ${coords.lat.toFixed(4)},${coords.lng.toFixed(4)}<br/><small>“내 위치 공유하기”를 눌러 춘천 위치를 공유하세요</small>` : "위치를 공유해보세요";
-        L.marker(center).addTo(map).bindPopup(msg);
-      }
-      // 멤버가 여러 명이면 모두 보이도록 bounds 조정
-      if (validLocs.length > 1) {
-        try {
-          const group = new L.featureGroup(validLocs.map((m: any) => L.marker([m.location.lat, m.location.lng])));
-          map.fitBounds(group.getBounds().pad(0.2));
-        } catch {}
+        const c = coords ? [coords.lat, coords.lng] as [number, number] : [36.5, 127.5] as [number, number];
+        const msg = coords ? `내 위치 (공유 전) - ${c[0].toFixed(4)},${c[1].toFixed(4)}<br/><small>“내 위치 1회 공유”를 눌러 위치를 공유하세요</small>` : "위치를 공유해보세요";
+        L.marker(c).addTo(layer).bindPopup(msg);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [tab, membersLoc, coords, user?.id]);
+  }, [tab]); // tab 변경 시만 맵 생성, membersLoc/coord 변경 시 마커만 갱신은 아래 effect에서
+  // 마커 갱신 전용 (뷰 유지)
+  useEffect(() => {
+    if (tab !== "map" || !mapInstance.current || !L || !markerLayerRef.current) return;
+    const layer = markerLayerRef.current;
+    layer.clearLayers();
+    const validLocs = membersLoc.filter((m: any) => m.location && typeof m.location.lat === "number");
+    validLocs.forEach((m: any) => {
+      const isMe = m.id === user?.id;
+      const initials = (m.realName || "?").slice(0, 1);
+      const avatarHtml = m.avatar ? `<img src="${m.avatar}" style="width:100%;height:100%;object-fit:cover"/>` : `<span style="font-weight:900;color:${isMe ? "#FF6B6B" : "#4ECDC4"}">${initials}</span>`;
+      const icon = L.divIcon({
+        html: `<div style="display:flex;flex-direction:column;align-items:center;gap:3px;transform:translateY(-8px)">
+          <div style="width:48px;height:48px;border-radius:50%;border:3px solid ${isMe ? "#FF6B6B" : "#4ECDC4"};overflow:hidden;background:white;box-shadow:0 6px 16px rgba(0,0,0,0.25);display:flex;align-items:center;justify-content:center;font-size:20px">
+            ${avatarHtml}
+          </div>
+          <span style="background:${isMe ? "#FF6B6B" : "#2D3436"};color:white;font-size:11px;font-weight:800;padding:3px 8px;border-radius:999px;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,0.2)">${m.realName}${isMe ? " (나)" : ""}</span>
+          <span style="background:white;color:#636E72;font-size:9px;font-weight:700;padding:1px 6px;border-radius:999px;white-space:nowrap;border:1px solid #FFE0CC">${m.location.address ? m.location.address.split(",").slice(0,2).join(",") : `${m.location.lat.toFixed(3)},${m.location.lng.toFixed(3)}`}</span>
+        </div>`,
+        className: "",
+        iconSize: [90, 80],
+        iconAnchor: [45, 40],
+      });
+      L.marker([m.location.lat, m.location.lng], { icon }).addTo(layer).bindPopup(`<b>${m.realName}${isMe ? " (나)" : ""}</b><br/>${m.location.address || `${m.location.lat.toFixed(5)}, ${m.location.lng.toFixed(5)}`}<br/><small>${m.location.updatedAt ? new Date(m.location.updatedAt).toLocaleString() : ""}</small>`);
+    });
+    if (validLocs.length === 0 && coords) {
+      L.marker([coords.lat, coords.lng]).addTo(layer).bindPopup(`내 위치 (공유 전)`);
+    }
+  }, [membersLoc, coords, user?.id, tab]);
 
   const triggerAlarm = (a: AlarmData) => {
     setAlarm(a);
@@ -1032,6 +1077,9 @@ export default function Dashboard() {
                     </button>
                     <button onClick={toggleTracking} className={`px-5 py-3 rounded-2xl font-black text-sm shadow border ${isTracking ? "bg-[#FF6B6B] text-white border-[#FF6B6B] animate-pulse" : "bg-[#FFE66D] text-[#2D3436] border-[#FFD54F]"}`}>
                       {isTracking ? "⏸️ 실시간 추적 중지" : "▶️ 실시간 이동 추적"}
+                    </button>
+                    <button onClick={recenterMap} className="px-4 py-3 rounded-2xl bg-white text-[#636E72] font-black text-sm shadow border border-[#FFE0CC]">
+                      🎯 내 위치로
                     </button>
                   </div>
                   {geoError && <div className="mt-2 text-xs bg-[#FFE3E3] text-[#C0392B] px-3 py-2 rounded-xl font-bold">{geoError}</div>}
