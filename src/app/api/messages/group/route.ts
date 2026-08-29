@@ -94,6 +94,17 @@ export async function POST(req: NextRequest) {
     const msg = await Message.create(msgData);
     await msg.populate("sender", "realName username avatar");
     console.log(`✅ [DB] 메시지 실시간 저장: type=${msgData.type} group=${String(user.groupId)} sender=${payload.username} id=${String(msg._id)}`);
+    // 사이트 꺼져도 가야 하는 푸시 — 일정은 큼직한 알람, 일반 메시지도 알림
+    try {
+      const { sendPushToGroup } = await import("@/lib/push");
+      const title = msgData.type === "schedule" ? `📅 새 일정: ${schedule?.title}` : msgData.type === "vote" ? `🗳️ 새 투표: ${vote?.question}` : `💬 ${user.realName}`;
+      const body = msgData.type === "schedule" ? `${schedule?.date} ${schedule?.time || ""} - ${user.realName}님이 일정을 올렸어요!` : msgData.type === "vote" ? `${user.realName}님이 투표를 올렸어요!` : (content || "").slice(0, 80);
+      const pushType = msgData.type === "schedule" ? "schedule" : msgData.type === "vote" ? "vote" : "message";
+      // fire-and-forget (기다리지 않고 백그라운드)
+      sendPushToGroup(String(user.groupId), String(user._id), { title, body, url: "/", type: pushType as any });
+    } catch (e: any) {
+      console.warn("[PUSH] 호출 실패:", e.message);
+    }
 
     const populated = msg as any;
 

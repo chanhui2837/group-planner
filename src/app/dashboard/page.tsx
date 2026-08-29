@@ -70,10 +70,62 @@ export default function Dashboard() {
   const [lookupLoading, setLookupLoading] = useState(false);
   const [resetLookup, setResetLookup] = useState({ username: "", code: "", newPw: "" });
 
-  // auth guard
+  // auth guard + 푸시 구독 (사이트 꺼져도 알림 위해)
   useEffect(() => {
     if (!loading && !user) router.replace("/auth");
+    if (user && "Notification" in window && "serviceWorker" in navigator) {
+      (async () => {
+        try {
+          if (Notification.permission === "default") {
+            // 첫 진입 시 조용히 요청하지 않고, 지도/채팅에서 일정 올릴 때 요청됨. 여기선 스킵.
+          }
+          if (Notification.permission !== "granted") return;
+          const reg = await navigator.serviceWorker.ready;
+          const existing = await reg.pushManager.getSubscription();
+          if (existing) return;
+          const vapid = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+          if (!vapid) {
+            console.warn("[PUSH] VAPID 미설정 — 구독 스킵");
+            return;
+          }
+          const toUint8 = (base64: string) => {
+            const pad = "=".repeat((4 - (base64.length % 4)) % 4);
+            const b64 = (base64 + pad).replace(/-/g, "+").replace(/_/g, "/");
+            const raw = atob(b64);
+            return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+          };
+          const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: toUint8(vapid) as any });
+          await fetch("/api/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub) });
+          console.log("✅ [PUSH] 구독 완료 — 꺼져도 알림 수신 가능");
+        } catch (e: any) {
+          console.warn("[PUSH] 구독 실패:", e.message);
+        }
+      })();
+    }
   }, [loading, user, router]);
+
+  const enablePush = async () => {
+    if (!("Notification" in window)) return alert("이 브라우저는 알림을 지원하지 않아요");
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") return alert("알림 권한이 거부됐어요. 브라우저 설정 > 알림 허용 후 다시 시도하세요");
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const vapid = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+      if (!vapid) return alert("VAPID 미설정");
+      const toUint8 = (base64: string) => {
+        const pad = "=".repeat((4 - (base64.length % 4)) % 4);
+        const b64 = (base64 + pad).replace(/-/g, "+").replace(/_/g, "/");
+        const raw = atob(b64);
+        return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+      };
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: toUint8(vapid) as any });
+      const res = await fetch("/api/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub) });
+      if (!res.ok) throw new Error("구독 저장 실패");
+      alert("✅ 알림 활성화! 사이트가 꺼져도 일정/메시지 알림이 옵니다. (핸드폰: 브라우저를 홈 화면에 추가하면 더 잘 옵니다)");
+    } catch (e: any) {
+      alert("알림 활성화 실패: " + e.message);
+    }
+  };
 
   // fetch groups search
   useEffect(() => {
@@ -770,6 +822,12 @@ export default function Dashboard() {
         </div>
 
         <div className="flex items-center gap-2">
+          <button onClick={enablePush} className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#FFE66D] border border-[#FFD54F] text-xs font-black text-[#2D3436] shrink-0" title="사이트 꺼져도 알림 받기">
+            🔔 알림 켜기
+          </button>
+          <button onClick={enablePush} className="sm:hidden p-2 rounded-xl bg-[#FFE66D] border border-[#FFD54F] text-xs" title="알림 켜기">
+            🔔
+          </button>
           <button
             onClick={() => {
               navigator.clipboard.writeText(group.inviteCode);
