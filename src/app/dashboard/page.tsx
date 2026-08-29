@@ -61,6 +61,12 @@ export default function Dashboard() {
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // email lookup (로그인한 이메일만 치면 바로 내역)
+  const [lookupEmail, setLookupEmail] = useState("");
+  const [lookupResult, setLookupResult] = useState<string[] | null>(null);
+  const [lookupLoading, setLookupLoading] = useState(false);
+  const [resetLookup, setResetLookup] = useState({ username: "", code: "", newPw: "" });
+
   // auth guard
   useEffect(() => {
     if (!loading && !user) router.replace("/auth");
@@ -529,6 +535,53 @@ export default function Dashboard() {
       triggerAlarm({ title: "✅ 프로필 사진 변경!", body: "새 프로필 사진이 모두에게 표시돼요.", type: "schedule" });
     };
     reader.readAsDataURL(file);
+  };
+
+  const doLookup = async (email?: string) => {
+    const target = email || lookupEmail || user?.email || "";
+    if (!target.trim()) return alert("이메일을 입력하세요");
+    setLookupLoading(true);
+    setLookupResult(null);
+    try {
+      const res = await fetch("/api/auth/find-id", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: target, mode: "find-id" }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setLookupResult(data.usernames);
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setLookupLoading(false);
+    }
+  };
+  const doResetRequest = async () => {
+    if (!lookupEmail || !resetLookup.username) return alert("이메일과 아이디를 입력하세요");
+    setLookupLoading(true);
+    try {
+      const res = await fetch("/api/auth/find-id", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: lookupEmail, username: resetLookup.username, mode: "request-reset" }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      alert(data.mocked ? `개발 모드 코드: ${data.code}` : "코드가 이메일로 발송됐어요");
+      setResetLookup({ ...resetLookup, code: data.code || "" });
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setLookupLoading(false);
+    }
+  };
+  const doResetConfirm = async () => {
+    if (!resetLookup.code || !resetLookup.newPw) return alert("코드와 새 비밀번호 입력");
+    setLookupLoading(true);
+    try {
+      const res = await fetch("/api/auth/reset-password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: lookupEmail, username: resetLookup.username, code: resetLookup.code, newPassword: resetLookup.newPw }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      alert("비밀번호 변경 완료");
+      setResetLookup({ username: "", code: "", newPw: "" });
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setLookupLoading(false);
+    }
   };
 
   const logout = async () => {
@@ -1085,6 +1138,35 @@ export default function Dashboard() {
                       )}
                     </div>
                   ))}
+                </div>
+              </div>
+
+              <div className="bg-white rounded-[24px] border border-[#FFE0CC] p-6">
+                <h4 className="font-black text-sm">🔍 이메일로 내 계정 찾기 / 비밀번호 변경</h4>
+                <p className="text-xs text-[#636E72] mt-1">로그인한 이메일만 치면 바로 그 이메일의 아이디 내역이 나와요. 같은 이메일로 여러 계정 가능!</p>
+                <div className="mt-3 flex gap-2">
+                  <input value={lookupEmail} onChange={(e) => setLookupEmail(e.target.value)} placeholder={user.email} className="flex-1 px-4 py-2.5 rounded-xl bg-[#FFF8F0] border border-[#FFE0CC] text-sm" />
+                  <button onClick={() => doLookup()} disabled={lookupLoading} className="px-4 py-2.5 rounded-xl bg-[#4ECDC4] text-white font-black text-sm disabled:opacity-50">{lookupLoading ? "조회 중..." : "아이디 조회"}</button>
+                  <button onClick={() => { setLookupEmail(user.email); doLookup(user.email); }} className="px-3 py-2.5 rounded-xl bg-[#FFE8D6] text-[#636E72] font-bold text-xs hidden sm:block">내 이메일로 바로 조회</button>
+                </div>
+                {lookupResult && (
+                  <div className="mt-3 p-3 rounded-xl bg-[#E0F7F4] border border-[#4ECDC4]/30">
+                    <div className="text-xs font-black text-[#00B894]">이 이메일의 아이디 {lookupResult.length}개:</div>
+                    <div className="mt-1 flex flex-wrap gap-1.5">{lookupResult.map((u) => <span key={u} className="px-2.5 py-1 rounded-full bg-white border border-[#4ECDC4] font-mono font-bold text-sm">{u}</span>)}</div>
+                  </div>
+                )}
+                <div className="mt-4 pt-4 border-t border-[#FFE0CC]">
+                  <div className="text-xs font-black text-[#636E72]">비밀번호 변경 (이메일 + 아이디로 바로 재설정)</div>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <input value={resetLookup.username} onChange={(e) => setResetLookup({ ...resetLookup, username: e.target.value })} placeholder="아이디" className="px-3 py-2.5 rounded-xl bg-[#FFF8F0] border border-[#FFE0CC] text-sm" />
+                    <button onClick={doResetRequest} disabled={lookupLoading} className="px-3 py-2.5 rounded-xl bg-[#FF6B6B] text-white font-black text-xs">코드 발송</button>
+                  </div>
+                  <div className="mt-2 flex gap-2">
+                    <input value={resetLookup.code} onChange={(e) => setResetLookup({ ...resetLookup, code: e.target.value })} placeholder="코드 6자리" className="flex-1 px-3 py-2.5 rounded-xl bg-[#FFF8F0] border border-[#FFE0CC] text-sm font-mono" />
+                    <input value={resetLookup.newPw} onChange={(e) => setResetLookup({ ...resetLookup, newPw: e.target.value })} placeholder="새 비번" type="password" className="flex-1 px-3 py-2.5 rounded-xl bg-[#FFF8F0] border border-[#FFE0CC] text-sm" />
+                    <button onClick={doResetConfirm} disabled={lookupLoading} className="px-4 py-2.5 rounded-xl bg-[#00B894] text-white font-black text-xs">변경</button>
+                  </div>
+                  <div className="text-[11px] text-[#B2BEC3] mt-1">이메일만 치면 바로 조회, 비밀번호는 이메일+아이디 → 코드 → 새 비번 순으로 바로 변경</div>
                 </div>
               </div>
 

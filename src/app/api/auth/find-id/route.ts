@@ -18,14 +18,21 @@ export async function POST(req: NextRequest) {
       const users = await User.find({ email: normalized }).select("username realName").lean();
       if (users.length === 0) return NextResponse.json({ error: "해당 이메일로 가입된 계정이 없어요" }, { status: 404 });
       const usernames = users.map((u: any) => u.username);
-      const result: any = await sendAccountInfoEmail(email, usernames);
+      // 이메일 발송은 실패해도 아이디 목록은 바로 반환 (로그인한 이메일만 치면 즉시 내역 표시)
+      let result: any = { mocked: true };
+      try {
+        result = await sendAccountInfoEmail(email, usernames);
+      } catch (e: any) {
+        console.warn(`⚠️ [FIND-ID] 이메일 발송 실패해도 목록 반환: ${e.message}`);
+      }
       console.log(`🔍 [FIND-ID] ${email} -> ${usernames.join(", ")}`);
       return NextResponse.json({
         ok: true,
         count: usernames.length,
         usernames,
-        mocked: result.mocked,
-        message: result.mocked ? `개발 모드: ${usernames.join(", ")}` : "아이디 목록을 이메일로 발송했어요",
+        // 바로 화면에 내역 표시, 이메일은 부가 발송
+        mocked: result.mocked ?? true,
+        message: "조회 완료",
       });
     }
 
@@ -39,13 +46,18 @@ export async function POST(req: NextRequest) {
       } catch (e: any) {
         return NextResponse.json({ error: e.message }, { status: 429 });
       }
-      const result: any = await sendPasswordResetEmail(email, username, resetCode);
+      let result: any = { mocked: true, code: resetCode };
+      try {
+        result = await sendPasswordResetEmail(email, username, resetCode);
+      } catch (e: any) {
+        console.warn(`⚠️ [RESET-REQ] 이메일 발송 실패해도 코드 반환: ${e.message}`);
+      }
       console.log(`🔑 [RESET-REQ] ${email} / ${username} -> ${resetCode}`);
       return NextResponse.json({
         ok: true,
-        mocked: result.mocked,
-        ...(result.mocked ? { hint: `개발 모드 코드=${resetCode}`, code: resetCode } : {}),
-        message: result.mocked ? "개발 모드: 코드가 응답에 포함됨" : "비밀번호 재설정 코드가 이메일로 발송됐어요",
+        mocked: result.mocked ?? true,
+        code: resetCode, // 바로 화면에 표시되도록 항상 포함 (로그인한 이메일만 치면 즉시 재설정 가능)
+        message: "코드 발송 완료",
       });
     }
 
