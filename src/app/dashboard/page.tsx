@@ -1144,7 +1144,7 @@ export default function Dashboard() {
                   {isTracking && <div className="mt-2 text-xs font-bold text-[#FF6B6B] flex items-center gap-1.5"><span className="w-2 h-2 bg-[#FF6B6B] rounded-full animate-ping" /> 핸드폰 들고 이동하면 5초/10m 마다 MongoDB에 자동 저장 → 지도에 프로필/이름 실시간 이동!</div>}
                 </div>
                 {coords && <div className="px-4 py-2 bg-[#FFF8F0] border-b border-[#FFE0CC] text-xs flex items-center gap-2"><span className="w-2 h-2 bg-[#00B894] rounded-full animate-pulse" /> 현재 기준: {coords.lat.toFixed(4)}, {coords.lng.toFixed(4)} {Math.abs(coords.lat-37.8813)<0.01 ? "(춘천)" : Math.abs(coords.lat-37.5665)<0.01 ? "(서울 - 권한 거부 시 기본값)" : ""} <button onClick={() => setCoords(null)} className="ml-auto text-[#FF6B6B] font-bold underline">다시 가져오기</button></div>}
-                <div ref={mapRef} className="w-full h-[420px] bg-[#E8F5F3] relative" />
+                <div ref={mapRef} className="w-full h-[320px] sm:h-[420px] bg-[#E8F5F3] relative" />
                 <div className="p-3 bg-[#FFFBF5] border-t border-[#FFE0CC] flex flex-wrap gap-2">
                   {membersLoc.map((m) => (
                     <div key={m.id} className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold ${m.location ? "bg-white border-[#4ECDC4]/30" : "bg-[#F1F2F6] border-[#E5E7EB] text-[#636E72]"}`}>
