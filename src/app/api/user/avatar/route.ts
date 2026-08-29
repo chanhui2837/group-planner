@@ -17,6 +17,7 @@ export async function POST(req: NextRequest) {
     if (avatar.length > 3_000_000) return NextResponse.json({ error: "이미지가 너무 큽니다. 2MB 이하로 업로드하세요." }, { status: 400 });
 
     await User.findByIdAndUpdate(payload.userId, { avatar });
+    console.log(`✅ [DB] 프로필 사진 실시간 저장: user=${payload.username} size=${(avatar.length / 1024).toFixed(1)}KB`);
     return NextResponse.json({ ok: true, avatar });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });

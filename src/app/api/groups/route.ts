@@ -54,6 +54,7 @@ export async function POST(req: NextRequest) {
 
     user.groupId = group._id as any;
     await user.save();
+    console.log(`✅ [DB] 그룹 실시간 저장: "${group.name}" invite=${group.inviteCode} owner=${payload.username} members=${group.members.length}/10`);
 
     return NextResponse.json({
       ok: true,

@@ -93,6 +93,7 @@ export async function POST(req: NextRequest) {
 
     const msg = await Message.create(msgData);
     await msg.populate("sender", "realName username avatar");
+    console.log(`✅ [DB] 메시지 실시간 저장: type=${msgData.type} group=${String(user.groupId)} sender=${payload.username} id=${String(msg._id)}`);
 
     const populated = msg as any;
 

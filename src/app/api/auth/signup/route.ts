@@ -31,6 +31,10 @@ export async function POST(req: NextRequest) {
       avatar: "",
     });
 
+    // 실시간 저장 확인 로그
+    const totalUsers = await User.countDocuments();
+    console.log(`✅ [DB] 새 계정 저장됨! username=${user.username} realName=${user.realName} id=${String(user._id)} | 전체 유저 ${totalUsers}명`);
+
     const token = await createToken({ userId: String(user._id), username: user.username, realName: user.realName });
 
     const res = NextResponse.json({
