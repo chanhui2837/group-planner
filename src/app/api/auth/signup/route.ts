@@ -18,12 +18,7 @@ export async function POST(req: NextRequest) {
 
     const normalizedEmail = email.toLowerCase().trim();
     const normalizedUsername = username.trim();
-    // 이메일 인증 필수 — 인증된 이메일은 다계정 허용
-    const { isVerified } = await import("@/lib/verification");
-    if (!isVerified(normalizedEmail)) {
-      return NextResponse.json({ error: "이메일 인증을 먼저 완료해주세요 (인증 후 10분 유효)" }, { status: 403 });
-    }
-    // 아이디만 중복 체크 (이메일은 인증 시 다계정 허용)
+    // 이메일 인증 제거 — 바로 가입, 다계정 허용 (아이디만 중복 체크)
     const existingUsername = await User.findOne({ username: normalizedUsername });
     if (existingUsername) {
       return NextResponse.json({ error: "이미 사용 중인 아이디입니다." }, { status: 409 });
