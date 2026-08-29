@@ -30,6 +30,7 @@ export default function Dashboard() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const dmEndRef = useRef<HTMLDivElement>(null);
   const lastMsgCount = useRef(0);
 
   // schedule / vote modals
@@ -152,10 +153,21 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [user, group]);
 
-  // auto scroll
+  // auto scroll — 사용자가 위로 올렸을 땐 자동 이동 안 함
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+  const dmContainerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, dmMessages]);
+    const el = chatContainerRef.current;
+    if (!el) return;
+    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+    if (isNearBottom) chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+  useEffect(() => {
+    const el = dmContainerRef.current;
+    if (!el) return;
+    const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+    if (isNearBottom) dmEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [dmMessages]);
 
   // poll locations
   useEffect(() => {
@@ -815,18 +827,10 @@ export default function Dashboard() {
                     <div className="text-xs text-[#636E72]">{group.name} · 실시간 동기화 중...</div>
                   </div>
                 </div>
-                <div className="flex gap-2">
-                  <button onClick={() => setShowScheduleModal(true)} className="px-3 py-2 rounded-xl bg-[#FFE66D] text-[#2D3436] font-black text-xs flex items-center gap-1">
-                    📅 일정
-                  </button>
-                  <button onClick={() => setShowVoteModal(true)} className="px-3 py-2 rounded-xl bg-[#4ECDC4] text-white font-black text-xs flex items-center gap-1">
-                    🗳️ 투표
-                  </button>
-                </div>
               </div>
 
               {/* messages */}
-              <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 bg-[#FFFBF5]">
+              <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 bg-[#FFFBF5]">
                 {messages.length === 0 && <div className="text-center py-16 text-[#B2BEC3] text-sm">아직 메시지가 없어요. 첫 메시지를 남겨보세요! 👋</div>}
                 {messages.map((m) => {
                   const isMe = m.sender?.id === user.id;
@@ -914,6 +918,15 @@ export default function Dashboard() {
               </div>
 
               {/* input */}
+              {/* 일정/투표 버튼 - 아래로 이동, 더 누르기 쉽게 크게 */}
+              <div className="p-2 border-t border-[#FFE0CC] bg-[#FFFDF8] flex gap-2">
+                <button onClick={() => setShowScheduleModal(true)} className="flex-1 py-3.5 rounded-2xl bg-[#FFE66D] text-[#2D3436] font-black text-sm shadow flex items-center justify-center gap-1.5 active:scale-[0.98] transition">
+                  📅 일정 만들기
+                </button>
+                <button onClick={() => setShowVoteModal(true)} className="flex-1 py-3.5 rounded-2xl bg-[#4ECDC4] text-white font-black text-sm shadow flex items-center justify-center gap-1.5 active:scale-[0.98] transition">
+                  🗳️ 투표 만들기
+                </button>
+              </div>
               <div className="p-3 border-t border-[#FFE0CC] bg-white flex gap-2 items-center">
                 <input
                   value={input}
@@ -981,7 +994,7 @@ export default function Dashboard() {
                       <div className="font-black text-sm">{group.members.find((m) => m.id === dmTarget)?.realName}</div>
                       <span className="text-xs text-[#636E72]">와의 1:1 대화</span>
                     </div>
-                    <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 bg-[#FFFBF5]">
+                    <div ref={dmContainerRef} className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 bg-[#FFFBF5]">
                       {dmMessages.length === 0 && <div className="text-center py-12 text-[#B2BEC3] text-sm">아직 대화가 없어요. 인사해보세요!</div>}
                       {dmMessages.map((m) => {
                         const isMe = m.sender?.id === user.id;
@@ -991,6 +1004,7 @@ export default function Dashboard() {
                           </div>
                         );
                       })}
+                      <div ref={dmEndRef} />
                     </div>
                     <div className="p-3 border-t border-[#FFE0CC] bg-white flex gap-2">
                       <input value={dmInput} onChange={(e) => setDmInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && sendDM()} placeholder="메시지 입력..." className="flex-1 px-4 py-3 rounded-2xl bg-[#FFF8F0] border border-[#FFE0CC] text-sm focus:outline-none focus:border-[#4ECDC4]" />
