@@ -18,11 +18,15 @@ export async function POST(req: NextRequest) {
 
     const normalizedEmail = email.toLowerCase().trim();
     const normalizedUsername = username.trim();
-    const existingUser = await User.findOne({ $or: [{ username: normalizedUsername }, { email: normalizedEmail }] });
-    if (existingUser) {
-      if (existingUser.username === normalizedUsername) return NextResponse.json({ error: "이미 사용 중인 아이디입니다." }, { status: 409 });
-      if (existingUser.email === normalizedEmail) return NextResponse.json({ error: "이미 사용 중인 이메일입니다." }, { status: 409 });
-      return NextResponse.json({ error: `이미 사용 중: ${existingUser.username === normalizedUsername ? "아이디" : "이메일"}` }, { status: 409 });
+    // 이메일 인증 필수 — 인증된 이메일은 다계정 허용
+    const { isVerified } = await import("@/lib/verification");
+    if (!isVerified(normalizedEmail)) {
+      return NextResponse.json({ error: "이메일 인증을 먼저 완료해주세요 (인증 후 10분 유효)" }, { status: 403 });
+    }
+    // 아이디만 중복 체크 (이메일은 인증 시 다계정 허용)
+    const existingUsername = await User.findOne({ username: normalizedUsername });
+    if (existingUsername) {
+      return NextResponse.json({ error: "이미 사용 중인 아이디입니다." }, { status: 409 });
     }
 
     const hashed = await bcrypt.hash(password, 10);

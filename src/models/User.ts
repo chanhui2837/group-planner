@@ -22,7 +22,7 @@ const UserSchema = new Schema<IUser>(
   {
     realName: { type: String, required: true, trim: true },
     username: { type: String, required: true, unique: true, trim: true, minlength: 3 },
-    email: { type: String, required: true, unique: true, trim: true, lowercase: true },
+    email: { type: String, required: true, trim: true, lowercase: true, index: true },
     password: { type: String, required: true },
     avatar: { type: String, default: "" },
     groupId: { type: Schema.Types.ObjectId, ref: "Group", default: null },
