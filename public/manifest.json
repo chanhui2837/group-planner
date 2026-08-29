@@ -1,0 +1,13 @@
+{
+  "name": "Family Planner",
+  "short_name": "Family",
+  "description": "가족 그룹 플래너 - 채팅, 일정, 투표, 위치 공유",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FFF8F0",
+  "theme_color": "#FF6B6B",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
