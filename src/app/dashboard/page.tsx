@@ -965,9 +965,6 @@ export default function Dashboard() {
                     <button onClick={toggleTracking} className={`px-5 py-3 rounded-2xl font-black text-sm shadow border ${isTracking ? "bg-[#FF6B6B] text-white border-[#FF6B6B] animate-pulse" : "bg-[#FFE66D] text-[#2D3436] border-[#FFD54F]"}`}>
                       {isTracking ? "⏸️ 실시간 추적 중지" : "▶️ 실시간 이동 추적"}
                     </button>
-                    <button onClick={shareChuncheon} disabled={sharing} className="px-4 py-3 rounded-2xl bg-white text-[#636E72] font-black text-sm shadow border border-[#FFE0CC] disabled:opacity-60" title="테스트용 - 춘천 시청 좌표로 저장">
-                      🧪 춘천 테스트
-                    </button>
                   </div>
                   {geoError && <div className="mt-2 text-xs bg-[#FFE3E3] text-[#C0392B] px-3 py-2 rounded-xl font-bold">{geoError}</div>}
                   {isTracking && <div className="mt-2 text-xs font-bold text-[#FF6B6B] flex items-center gap-1.5"><span className="w-2 h-2 bg-[#FF6B6B] rounded-full animate-ping" /> 핸드폰 들고 이동하면 5초/10m 마다 MongoDB에 자동 저장 → 지도에 프로필/이름 실시간 이동!</div>}
