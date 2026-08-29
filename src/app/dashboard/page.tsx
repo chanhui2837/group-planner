@@ -1013,7 +1013,7 @@ export default function Dashboard() {
                 <div className="relative">
                   <div className="flex items-start justify-between">
                     <div>
-                      <div className="text-sm font-bold opacity-90 flex items-center gap-2">현재 날씨 • {coords ? `${coords.lat.toFixed(2)}, ${coords.lng.toFixed(2)}` : "위치 확인 중"} <button onClick={() => setCoords({ lat: 37.8813, lng: 127.7298 })} className="ml-2 px-2 py-0.5 rounded-full bg-white/20 text-xs">춘천</button><button onClick={() => setCoords({ lat: 37.5665, lng: 126.978 })} className="px-2 py-0.5 rounded-full bg-white/20 text-xs">서울</button><button onClick={() => setCoords(null)} className="px-2 py-0.5 rounded-full bg-white/80 text-[#2D3436] text-xs font-black">내 위치</button></div>
+                      <div className="text-sm font-bold opacity-90 flex items-center gap-2">현재 날씨 • {coords ? `${coords.lat.toFixed(2)}, ${coords.lng.toFixed(2)}` : "위치 확인 중"} <button onClick={() => setCoords({ lat: 37.5665, lng: 126.978 })} className="ml-2 px-2 py-0.5 rounded-full bg-white/20 text-xs">서울</button><button onClick={() => setCoords(null)} className="px-2 py-0.5 rounded-full bg-white/80 text-[#2D3436] text-xs font-black">내 위치</button></div>
                       {weatherLoading ? (
                         <div className="mt-6 text-white/80">불러오는 중...</div>
                       ) : weatherError ? (
