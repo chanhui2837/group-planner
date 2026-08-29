@@ -30,14 +30,13 @@ function genCode() {
   return c;
 }
 
-GroupSchema.pre("validate", function (next: any) {
+GroupSchema.pre("validate", function () {
   const doc = this as any;
   if (!doc.inviteCode) doc.inviteCode = genCode();
   if (!doc.color) {
     const colors = ["#FF8A65", "#4DB6AC", "#64B5F6", "#FFB74D", "#BA68C8", "#81C784", "#FFD54F", "#90A4AE"];
     doc.color = colors[Math.floor(Math.random() * colors.length)];
   }
-  next();
 });
 
 const Group: Model<IGroup> = mongoose.models.Group || mongoose.model<IGroup>("Group", GroupSchema);
