@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useStore } from "@/lib/store";
 import Logo from "@/components/Logo";
 import AlarmOverlay, { AlarmData } from "@/components/AlarmOverlay";
+import PWAInstall from "@/components/PWAInstall";
 
 // lazy leaflet to avoid SSR
 let L: any = null;
@@ -878,6 +879,7 @@ export default function Dashboard() {
         </div>
 
         <div className="flex items-center gap-1 sm:gap-2">
+          <div className="hidden sm:block"><PWAInstall /></div>
           <button onClick={enablePush} className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#FFE66D] border border-[#FFD54F] text-xs font-black text-[#2D3436] shrink-0" title="사이트 꺼져도 알림 받기">
             🔔 알림 켜기
           </button>
