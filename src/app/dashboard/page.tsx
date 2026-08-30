@@ -270,6 +270,7 @@ export default function Dashboard() {
       map.setView([36.5, 127.5], 7);
     }
     hasCenteredRef.current = true;
+    setTimeout(() => map.invalidateSize(), 100);
   };
   useEffect(() => {
     if (tab !== "map" || !mapRef.current) return;
@@ -376,12 +377,39 @@ export default function Dashboard() {
       L.marker([coords.lat, coords.lng]).addTo(layer).bindPopup(`내 위치 (공유 전)`);
     }
   }, [membersLoc, coords, user?.id, tab]);
-  // 모바일에서 지도 탭 전환 시 파란 화면만 뜨는 버그 방지
+  // 모바일/다른 창 갔다 올 때 파란 화면만 뜨는 버그 방지
   useEffect(() => {
     if (tab === "map" && mapInstance.current) {
       setTimeout(() => mapInstance.current?.invalidateSize(), 100);
       setTimeout(() => mapInstance.current?.invalidateSize(), 500);
+      setTimeout(() => mapInstance.current?.invalidateSize(), 1000);
     }
+  }, [tab]);
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && tab === "map" && mapInstance.current) {
+        setTimeout(() => mapInstance.current?.invalidateSize(), 100);
+        setTimeout(() => mapInstance.current?.invalidateSize(), 500);
+      }
+    };
+    const onFocus = () => {
+      if (tab === "map" && mapInstance.current) {
+        setTimeout(() => mapInstance.current?.invalidateSize(), 100);
+      }
+    };
+    const onResize = () => {
+      if (tab === "map" && mapInstance.current) {
+        setTimeout(() => mapInstance.current?.invalidateSize(), 100);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("resize", onResize);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("resize", onResize);
+    };
   }, [tab]);
 
   const triggerAlarm = (a: AlarmData) => {
@@ -524,6 +552,7 @@ export default function Dashboard() {
         const d = await res.json().catch(() => ({}));
         return alert("위치 공유 실패: " + (d.error || res.statusText));
       }
+      setGeoError(null);
       setCoords({ lat: latitude, lng: longitude });
       await refresh();
       const r2 = await fetch("/api/location");
@@ -595,6 +624,7 @@ export default function Dashboard() {
           address = j.display_name || "";
         } catch {}
         await fetch("/api/location", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lat: la, lng: lo, address }) });
+        setGeoError(null);
         setCoords({ lat: la, lng: lo });
         console.log(`📍 [실시간] 위치 자동 갱신: ${la.toFixed(5)},${lo.toFixed(5)}`);
         // 지도 탭이 아니면 membersLoc 갱신은 폴링(4초)이 처리, 지도면 즉시 반영
