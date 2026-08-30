@@ -293,6 +293,9 @@ export default function Dashboard() {
         } catch {}
       }
       if (cancelled || !mapRef.current) return;
+      // hidden -> block 전환 시 레이아웃 반영 대기
+      await new Promise((r) => setTimeout(r, 80));
+      if (cancelled || !mapRef.current || mapRef.current.clientHeight === 0) return;
       // 기존 맵이 없으면 최초 생성
       if (!mapInstance.current) {
         const validLocs = membersLoc.filter((m: any) => m.location && typeof m.location.lat === "number");
@@ -1167,8 +1170,7 @@ export default function Dashboard() {
             </div>
           )}
 
-          {tab === "map" && (
-            <div className="space-y-4">
+          <div className={`space-y-4 ${tab === "map" ? "block" : "hidden"}`}>
               <div className="bg-white rounded-[24px] border border-[#FFE0CC] shadow-sm overflow-hidden">
                 <div className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
@@ -1221,7 +1223,6 @@ export default function Dashboard() {
                   ))}
               </div>
             </div>
-          )}
 
           {tab === "weather" && (
             <div className="space-y-4">
