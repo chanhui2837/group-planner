@@ -33,6 +33,8 @@ export default function Dashboard() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const dmEndRef = useRef<HTMLDivElement>(null);
   const lastMsgCount = useRef(0);
+  const [chatMedia, setChatMedia] = useState<{ url: string; type: string } | null>(null);
+  const chatFileRef = useRef<HTMLInputElement>(null);
 
   // schedule / vote modals
   const [showScheduleModal, setShowScheduleModal] = useState(false);
@@ -502,7 +504,8 @@ export default function Dashboard() {
   };
 
   const sendMessage = async () => {
-    if (!input.trim()) return;
+    if (!input.trim() && !chatMedia) return;
+    if (chatMedia) return sendMedia();
     setSending(true);
     const res = await fetch("/api/messages/group", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: input, type: "text" }) });
     setSending(false);
@@ -515,6 +518,62 @@ export default function Dashboard() {
     const d = await res.json();
     setMessages((prev) => [...prev, d.message]);
     lastMsgCount.current++;
+  };
+
+  const handleChatFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.type.startsWith("image/")) {
+      if (file.size > 12 * 1024 * 1024) return alert("이미지는 12MB 이하만 가능해요");
+      try {
+        let dataUrl: string;
+        if (file.size > 1 * 1024 * 1024) dataUrl = await compressImage(file, 1200);
+        else {
+          dataUrl = await new Promise<string>((res, rej) => {
+            const r = new FileReader();
+            r.onload = () => res(r.result as string);
+            r.onerror = () => rej(new Error("읽기 실패"));
+            r.readAsDataURL(file);
+          });
+          if (dataUrl.length > 14_000_000) dataUrl = await compressImage(file, 1000);
+        }
+        setChatMedia({ url: dataUrl, type: file.type });
+      } catch {
+        alert("이미지 처리 실패");
+      }
+    } else if (file.type.startsWith("video/")) {
+      if (file.size > 25 * 1024 * 1024) return alert("동영상은 25MB 이하만 가능해요");
+      const dataUrl = await new Promise<string>((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result as string);
+        r.onerror = () => rej(new Error("읽기 실패"));
+        r.readAsDataURL(file);
+      });
+      if (dataUrl.length > 18_000_000) return alert("동영상이 너무 큽니다. 더 작은 파일로 시도하세요");
+      setChatMedia({ url: dataUrl, type: file.type });
+    } else {
+      alert("사진과 동영상만 전송 가능해요");
+    }
+    if (e.target) e.target.value = "";
+  };
+
+  const sendMedia = async () => {
+    if (!chatMedia) return;
+    const type = chatMedia.type.startsWith("image/") ? "image" : "video";
+    setSending(true);
+    try {
+      const res = await fetch("/api/messages/group", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type, mediaUrl: chatMedia.url, mediaType: chatMedia.type, content: input.trim() }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "전송 실패");
+      setMessages((prev) => [...prev, data.message]);
+      lastMsgCount.current++;
+      setChatMedia(null);
+      setInput("");
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setSending(false);
+    }
   };
 
   const sendSchedule = async () => {
@@ -681,21 +740,60 @@ export default function Dashboard() {
     setTab("map");
   };
 
+  const compressImage = (file: File, maxSize = 900): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > maxSize || height > maxSize) {
+          const ratio = Math.min(maxSize / width, maxSize / height);
+          width = Math.round(width * ratio);
+          height = Math.round(height * ratio);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return reject(new Error("canvas 실패"));
+        ctx.drawImage(img, 0, 0, width, height);
+        URL.revokeObjectURL(url);
+        // 0.8 품질로 압축
+        resolve(canvas.toDataURL("image/jpeg", 0.8));
+      };
+      img.onerror = () => reject(new Error("이미지 로드 실패"));
+      img.src = url;
+    });
+
   const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (file.size > 2 * 1024 * 1024) return alert("2MB 이하만 가능해요");
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const base64 = reader.result as string;
+    if (!file.type.startsWith("image/")) return alert("이미지 파일만 가능해요");
+    if (file.size > 12 * 1024 * 1024) return alert("12MB 이하만 가능해요. 더 작은 사진으로 시도하세요");
+    try {
+      let base64: string;
+      if (file.size > 1.5 * 1024 * 1024 || file.type === "image/png") {
+        base64 = await compressImage(file, 900);
+      } else {
+        base64 = await new Promise<string>((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(r.result as string);
+          r.onerror = () => rej(new Error("읽기 실패"));
+          r.readAsDataURL(file);
+        });
+        if (base64.length > 10_000_000) base64 = await compressImage(file, 900);
+      }
       setAvatarPreview(base64);
       const res = await fetch("/api/user/avatar", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ avatar: base64 }) });
       const data = await res.json();
       if (!res.ok) return alert(data.error || "업로드 실패");
       await refresh();
       triggerAlarm({ title: "✅ 프로필 사진 변경!", body: "새 프로필 사진이 모두에게 표시돼요.", type: "schedule" });
-    };
-    reader.readAsDataURL(file);
+    } catch {
+      alert("이미지 처리 실패");
+    } finally {
+      if (e.target) e.target.value = "";
+    }
   };
 
   const doLookup = async (email?: string) => {
@@ -1060,6 +1158,44 @@ export default function Dashboard() {
                       </div>
                     );
                   }
+                  if (m.type === "image") {
+                    return (
+                      <div key={m.id} className={`flex gap-2 ${isMe ? "justify-end" : "justify-start"}`}>
+                        {!isMe && (
+                          <div className="w-8 h-8 rounded-full bg-[#FFE8D6] flex items-center justify-center font-black text-xs shrink-0 overflow-hidden">
+                            {m.sender?.avatar ? <img src={m.sender.avatar} className="w-full h-full object-cover" /> : m.sender?.realName?.slice(0, 1)}
+                          </div>
+                        )}
+                        <div className="max-w-[74%]">
+                          {!isMe && <div className="text-[11px] font-bold text-[#636E72] ml-1 mb-1">{m.sender?.realName}</div>}
+                          <div className={`rounded-[18px] overflow-hidden shadow-sm ${isMe ? "bg-[#FF6B6B] p-1" : "bg-white border border-[#FFE0CC] p-1"}`}>
+                            <img src={m.mediaUrl} alt="" className="max-w-[280px] max-h-[320px] w-full rounded-[14px] object-cover cursor-pointer" onClick={() => window.open(m.mediaUrl, "_blank")} />
+                            {m.content && <div className={`px-3 py-1.5 text-sm ${isMe ? "text-white" : "text-[#2D3436]"}`}>{m.content}</div>}
+                          </div>
+                          <div className={`text-[10px] mt-1 ${isMe ? "text-right text-[#B2BEC3]" : "text-[#B2BEC3] ml-1"}`}>{new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>
+                        </div>
+                      </div>
+                    );
+                  }
+                  if (m.type === "video") {
+                    return (
+                      <div key={m.id} className={`flex gap-2 ${isMe ? "justify-end" : "justify-start"}`}>
+                        {!isMe && (
+                          <div className="w-8 h-8 rounded-full bg-[#FFE8D6] flex items-center justify-center font-black text-xs shrink-0 overflow-hidden">
+                            {m.sender?.avatar ? <img src={m.sender.avatar} className="w-full h-full object-cover" /> : m.sender?.realName?.slice(0, 1)}
+                          </div>
+                        )}
+                        <div className="max-w-[74%]">
+                          {!isMe && <div className="text-[11px] font-bold text-[#636E72] ml-1 mb-1">{m.sender?.realName}</div>}
+                          <div className={`rounded-[18px] overflow-hidden shadow-sm ${isMe ? "bg-[#FF6B6B] p-1" : "bg-white border border-[#FFE0CC] p-1"}`}>
+                            <video src={m.mediaUrl} controls className="max-w-[280px] max-h-[320px] w-full rounded-[14px] bg-black" />
+                            {m.content && <div className={`px-3 py-1.5 text-sm ${isMe ? "text-white" : "text-[#2D3436]"}`}>{m.content}</div>}
+                          </div>
+                          <div className={`text-[10px] mt-1 ${isMe ? "text-right text-[#B2BEC3]" : "text-[#B2BEC3] ml-1"}`}>{new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>
+                        </div>
+                      </div>
+                    );
+                  }
                   return (
                     <div key={m.id} className={`flex gap-2 ${isMe ? "justify-end" : "justify-start"}`}>
                       {!isMe && (
@@ -1079,6 +1215,16 @@ export default function Dashboard() {
               </div>
 
               {/* input */}
+              {chatMedia && (
+                <div className="p-3 border-t border-[#FFE0CC] bg-[#FFF8F0] flex items-center gap-3">
+                  {chatMedia.type.startsWith("image/") ? <img src={chatMedia.url} className="w-20 h-20 rounded-xl object-cover border border-[#FFE0CC]" alt="preview" /> : <video src={chatMedia.url} className="w-20 h-20 rounded-xl object-cover border border-[#FFE0CC]" />}
+                  <div className="flex-1 text-xs">
+                    <div className="font-bold">{chatMedia.type.startsWith("image/") ? "사진" : "동영상"} 첨부됨</div>
+                    <div className="text-[#636E72]">전송 버튼을 누르면 함께 전송됩니다</div>
+                  </div>
+                  <button onClick={() => setChatMedia(null)} className="px-3 py-1.5 rounded-xl bg-[#FFE3E3] text-[#C0392B] text-xs font-bold">✕ 제거</button>
+                </div>
+              )}
               {/* 일정/투표 버튼 - 아래로 이동, 더 누르기 쉽게 크게 */}
               <div className="p-2 border-t border-[#FFE0CC] bg-[#FFFDF8] flex gap-2">
                 <button onClick={() => setShowScheduleModal(true)} className="flex-1 py-3.5 rounded-2xl bg-[#FFE66D] text-[#2D3436] font-black text-sm shadow flex items-center justify-center gap-1.5 active:scale-[0.98] transition">
@@ -1089,6 +1235,8 @@ export default function Dashboard() {
                 </button>
               </div>
               <div className="p-3 border-t border-[#FFE0CC] bg-white flex gap-2 items-center">
+                <input ref={chatFileRef} type="file" accept="image/*,video/*" className="hidden" onChange={handleChatFile} />
+                <button onClick={() => chatFileRef.current?.click()} className="p-2.5 rounded-xl bg-[#FFF0E6] border border-[#FFE0CC] text-[#636E72] hover:bg-[#FFE0CC] shrink-0" title="사진/동영상 첨부">📎</button>
                 <input
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
@@ -1101,7 +1249,7 @@ export default function Dashboard() {
                   placeholder="메시지를 입력하세요... (Enter로 전송)"
                   className="flex-1 px-4 py-3 rounded-2xl bg-[#FFF8F0] border border-[#FFE0CC] focus:outline-none focus:border-[#FF6B6B] text-sm"
                 />
-                <button onClick={sendMessage} disabled={sending || !input.trim()} className="px-5 py-3 rounded-2xl bg-[#FF6B6B] text-white font-black text-sm disabled:opacity-50 shadow">
+                <button onClick={sendMessage} disabled={sending || (!input.trim() && !chatMedia)} className="px-5 py-3 rounded-2xl bg-[#FF6B6B] text-white font-black text-sm disabled:opacity-50 shadow">
                   전송
                 </button>
               </div>

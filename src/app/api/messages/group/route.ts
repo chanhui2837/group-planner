@@ -43,6 +43,8 @@ export async function GET(req: NextRequest) {
               closed: m.vote.closed,
             }
           : null,
+        mediaUrl: m.mediaUrl || null,
+        mediaType: m.mediaType || null,
         createdAt: m.createdAt,
       })),
     });
@@ -62,7 +64,7 @@ export async function POST(req: NextRequest) {
     const user = await User.findById(payload.userId);
     if (!user?.groupId) return NextResponse.json({ error: "그룹에 먼저 가입하세요." }, { status: 400 });
 
-    const { content, type, schedule, vote } = await req.json();
+    const { content, type, schedule, vote, mediaUrl, mediaType } = await req.json();
 
     // validation per type
     if (type === "schedule") {
@@ -70,6 +72,9 @@ export async function POST(req: NextRequest) {
     } else if (type === "vote") {
       if (!vote?.question || !vote?.options || vote.options.length < 2) return NextResponse.json({ error: "투표 질문과 2개 이상 선택지 필요" }, { status: 400 });
       if (vote.options.length > 6) return NextResponse.json({ error: "선택지는 최대 6개" }, { status: 400 });
+    } else if (type === "image" || type === "video") {
+      if (!mediaUrl || typeof mediaUrl !== "string") return NextResponse.json({ error: "미디어 없음" }, { status: 400 });
+      if (mediaUrl.length > 18_000_000) return NextResponse.json({ error: "파일이 너무 큽니다 (15MB 이하 권장). 더 작은 파일로 시도하세요." }, { status: 400 });
     } else {
       if (!content || !content.trim()) return NextResponse.json({ error: "메시지 내용 필요" }, { status: 400 });
     }
@@ -89,6 +94,10 @@ export async function POST(req: NextRequest) {
         expiresAt: vote.expiresAt ? new Date(vote.expiresAt) : null,
         closed: false,
       };
+    }
+    if (type === "image" || type === "video") {
+      msgData.mediaUrl = mediaUrl;
+      msgData.mediaType = mediaType || (type === "image" ? "image/jpeg" : "video/mp4");
     }
 
     const msg = await Message.create(msgData);
@@ -126,6 +135,8 @@ export async function POST(req: NextRequest) {
               closed: populated.vote.closed,
             }
           : null,
+        mediaUrl: populated.mediaUrl || null,
+        mediaType: populated.mediaType || null,
         createdAt: populated.createdAt,
       },
     });

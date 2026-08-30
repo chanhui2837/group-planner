@@ -1,6 +1,6 @@
 import mongoose, { Schema, Document, Model } from "mongoose";
 
-export type MessageType = "text" | "schedule" | "vote" | "system";
+export type MessageType = "text" | "schedule" | "vote" | "system" | "image" | "video";
 
 export interface IMessage extends Document {
   groupId: mongoose.Types.ObjectId;
@@ -23,6 +23,9 @@ export interface IMessage extends Document {
     expiresAt?: Date;
     closed: boolean;
   };
+  // media
+  mediaUrl?: string;
+  mediaType?: string; // mime
   // direct message fields (reuse same collection with isDirect)
   isDirect?: boolean;
   receiver?: mongoose.Types.ObjectId;
@@ -34,7 +37,7 @@ const MessageSchema = new Schema<IMessage>(
   {
     groupId: { type: Schema.Types.ObjectId, ref: "Group", required: true, index: true },
     sender: { type: Schema.Types.ObjectId, ref: "User", required: true },
-    type: { type: String, enum: ["text", "schedule", "vote", "system"], default: "text" },
+    type: { type: String, enum: ["text", "schedule", "vote", "system", "image", "video"], default: "text" },
     content: { type: String, default: "" },
     schedule: {
       title: String,
@@ -55,6 +58,8 @@ const MessageSchema = new Schema<IMessage>(
       expiresAt: Date,
       closed: { type: Boolean, default: false },
     },
+    mediaUrl: { type: String, default: "" },
+    mediaType: { type: String, default: "" },
     isDirect: { type: Boolean, default: false },
     receiver: { type: Schema.Types.ObjectId, ref: "User" },
   },

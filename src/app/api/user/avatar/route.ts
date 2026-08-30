@@ -13,8 +13,8 @@ export async function POST(req: NextRequest) {
 
     const { avatar } = await req.json(); // base64 data url
     if (!avatar || typeof avatar !== "string") return NextResponse.json({ error: "이미지 없음" }, { status: 400 });
-    // limit 2MB base64 ~ 2.8M chars
-    if (avatar.length > 3_000_000) return NextResponse.json({ error: "이미지가 너무 큽니다. 2MB 이하로 업로드하세요." }, { status: 400 });
+    // 10MB까지 허용 (프론트에서 자동 압축 후 전송)
+    if (avatar.length > 14_000_000) return NextResponse.json({ error: "이미지가 너무 큽니다. 10MB 이하로 업로드하세요 (자동 압축 후에도 크면 더 작은 사진으로 시도)." }, { status: 400 });
 
     await User.findByIdAndUpdate(payload.userId, { avatar });
     console.log(`✅ [DB] 프로필 사진 실시간 저장: user=${payload.username} size=${(avatar.length / 1024).toFixed(1)}KB`);
