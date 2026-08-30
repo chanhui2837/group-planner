@@ -52,7 +52,6 @@ export default function Dashboard() {
   // location / map
   const [membersLoc, setMembersLoc] = useState<any[]>([]);
   const [sharing, setSharing] = useState(false);
-  const [isTracking, setIsTracking] = useState(false);
   const watchIdRef = useRef<number | null>(null);
   const lastSentRef = useRef<{ lat: number; lng: number; t: number } | null>(null);
   const mapRef = useRef<HTMLDivElement>(null);
@@ -105,9 +104,41 @@ export default function Dashboard() {
   }, [loading, user, router]);
 
   const enablePush = async () => {
-    if (!("Notification" in window)) return alert("이 브라우저는 알림을 지원하지 않아요");
+    if (!("Notification" in window) || !("serviceWorker" in navigator)) return alert("이 브라우저는 알림을 지원하지 않아요. Chrome/Edge 최신 버전으로 시도하세요");
+    if (Notification.permission === "granted") {
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const vapid = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+        if (!vapid) return alert("VAPID 미설정 — 관리자에게 문의");
+        const toUint8 = (base64: string) => {
+          const pad = "=".repeat((4 - (base64.length % 4)) % 4);
+          const b64 = (base64 + pad).replace(/-/g, "+").replace(/_/g, "/");
+          const raw = atob(b64);
+          return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+        };
+        const existing = await reg.pushManager.getSubscription();
+        if (existing) {
+          await fetch("/api/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(existing) });
+          return alert("✅ 이미 알림이 켜져 있어요! 사이트 꺼져도 일정/문자 알림이 옵니다.");
+        }
+        const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: toUint8(vapid) as any });
+        const res = await fetch("/api/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub) });
+        if (!res.ok) throw new Error("구독 저장 실패");
+        alert("✅ 알림 활성화! 사이트가 꺼져도 일정/메시지 알림이 옵니다. (핸드폰: 브라우저 메뉴 > 홈 화면에 추가하면 더 잘 옵니다)");
+      } catch (e: any) {
+        alert("알림 활성화 실패: " + e.message);
+      }
+      return;
+    }
+    if (Notification.permission === "denied") {
+      alert("❌ 알림이 차단된 상태라 웹에서 강제로 켤 수 없어요 (브라우저 보안 정책).\n\n직접 허용해야 합니다:\n1. 주소창 왼쪽 🔒 클릭 → 사이트 설정\n2. ‘알림’ → ‘허용’으로 변경\n3. 페이지 새로고침 후 다시 ‘🔔 알림 켜기’ 클릭\n\n폰: 설정 > 앱 > 브라우저 > 알림 허용도 켜야 꺼져도 옵니다.");
+      return;
+    }
     const perm = await Notification.requestPermission();
-    if (perm !== "granted") return alert("알림 권한이 거부됐어요. 브라우저 설정 > 알림 허용 후 다시 시도하세요");
+    if (perm !== "granted") {
+      alert("알림 권한이 거부됐어요. 주소창 🔒 > 알림 ‘허용’으로 바꾸고 새로고침 후 다시 시도하세요.");
+      return;
+    }
     try {
       const reg = await navigator.serviceWorker.ready;
       const vapid = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
@@ -121,7 +152,7 @@ export default function Dashboard() {
       const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: toUint8(vapid) as any });
       const res = await fetch("/api/push/subscribe", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(sub) });
       if (!res.ok) throw new Error("구독 저장 실패");
-      alert("✅ 알림 활성화! 사이트가 꺼져도 일정/메시지 알림이 옵니다. (핸드폰: 브라우저를 홈 화면에 추가하면 더 잘 옵니다)");
+      alert("✅ 알림 활성화! 사이트가 꺼져도 일정/문자 알림이 옵니다.");
     } catch (e: any) {
       alert("알림 활성화 실패: " + e.message);
     }
@@ -564,88 +595,64 @@ export default function Dashboard() {
       if (showAlarm) triggerAlarm({ title: "📍 위치 공유 완료", body: `위치가 저장됐어요! (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`, type: "schedule" });
       setTab("map");
     };
+    if (watchIdRef.current !== null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
     navigator.geolocation.getCurrentPosition(
       async (pos) => {
         await doShare(pos.coords.latitude, pos.coords.longitude);
+        // 위치 공유 성공 시 자동으로 실시간 추적 시작 (버튼 없이)
+        const watchId = navigator.geolocation.watchPosition(
+          async (wp) => {
+            const la = wp.coords.latitude, lo = wp.coords.longitude;
+            const now = Date.now();
+            const last = lastSentRef.current;
+            if (last) {
+              const dt = now - last.t;
+              const dLat = la - last.lat, dLng = lo - last.lng;
+              const dist = Math.sqrt(dLat * dLat + dLng * dLng) * 111000;
+              if (dt < 5000 && dist < 10) return;
+            }
+            lastSentRef.current = { lat: la, lng: lo, t: now };
+            let address = "";
+            try {
+              const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${la}&lon=${lo}`);
+              const j = await r.json();
+              address = j.display_name || "";
+            } catch {}
+            await fetch("/api/location", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lat: la, lng: lo, address }) });
+            setGeoError(null);
+            setCoords({ lat: la, lng: lo });
+            console.log(`📍 [실시간] 위치 자동 갱신: ${la.toFixed(5)},${lo.toFixed(5)}`);
+            if (tab === "map") {
+              const r2 = await fetch("/api/location");
+              const d2 = await r2.json();
+              setMembersLoc(d2.members || []);
+            }
+          },
+          (err) => {
+            console.warn("[geo] watch fail", err);
+            if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+            watchIdRef.current = null;
+          },
+          { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+        );
+        watchIdRef.current = watchId as unknown as number;
+        lastSentRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude, t: Date.now() };
+        console.log("[geo] 위치 공유 + 실시간 자동 추적 시작 (버튼 없이)");
       },
       (err) => {
         setSharing(false);
         console.warn("[geo] share fail", err);
         if (err.code === 1) {
-          if (confirm("위치 권한이 거부됐어요. 브라우저 주소창 왼쪽 🔒 > 위치 허용 후 다시 시도하세요. 춘천 시청(37.8813,127.7298)으로 임시 공유할까요?")) {
-            doShare(37.8813, 127.7298);
-          }
+          alert("위치 권한이 거부됐어요. 브라우저 주소창 왼쪽 🔒 > 사이트 설정 > 위치 ‘허용’으로 바꾸고 새로고침 후 다시 시도하세요.\n\n폰: 설정 > 앱 > 브라우저 > 권한 > 위치 허용");
         } else {
           alert("위치 가져오기 실패: " + err.message + "\n\n팁: 핸드폰 설정 > 위치 서비스 켜기, 브라우저 위치 허용을 확인하세요.");
         }
       },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
     );
-  };
-
-  // 실시간 이동 추적 - 핸드폰 들고 이동하면 자동 갱신
-  const toggleTracking = () => {
-    if (isTracking) {
-      if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
-      watchIdRef.current = null;
-      setIsTracking(false);
-      console.log("[geo] 실시간 추적 중지");
-      return;
-    }
-    if (!("geolocation" in navigator)) return alert("위치 기능 미지원 기기예요");
-    if (!group) return alert("그룹에 먼저 가입하세요");
-    setIsTracking(true);
-    console.log("[geo] 실시간 추적 시작 - 5초/10m 마다 MongoDB에 자동 저장");
-    // 즉시 한 번 공유
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const la = pos.coords.latitude, lo = pos.coords.longitude;
-        lastSentRef.current = { lat: la, lng: lo, t: Date.now() };
-        fetch("/api/location", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lat: la, lng: lo, address: "" }) }).then(() => {
-          setCoords({ lat: la, lng: lo });
-        });
-      },
-      () => {}
-    );
-    const id = navigator.geolocation.watchPosition(
-      async (pos) => {
-        const la = pos.coords.latitude, lo = pos.coords.longitude;
-        const now = Date.now();
-        const last = lastSentRef.current;
-        // 5초 이내 & 10m 이내면 스킵 (배터리/DB 절약)
-        if (last) {
-          const dt = now - last.t;
-          const dLat = la - last.lat, dLng = lo - last.lng;
-          const dist = Math.sqrt(dLat * dLat + dLng * dLng) * 111000; // 대략 m
-          if (dt < 5000 && dist < 10) return;
-        }
-        lastSentRef.current = { lat: la, lng: lo, t: now };
-        let address = "";
-        try {
-          const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${la}&lon=${lo}`);
-          const j = await r.json();
-          address = j.display_name || "";
-        } catch {}
-        await fetch("/api/location", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lat: la, lng: lo, address }) });
-        setGeoError(null);
-        setCoords({ lat: la, lng: lo });
-        console.log(`📍 [실시간] 위치 자동 갱신: ${la.toFixed(5)},${lo.toFixed(5)}`);
-        // 지도 탭이 아니면 membersLoc 갱신은 폴링(4초)이 처리, 지도면 즉시 반영
-        if (tab === "map") {
-          const r2 = await fetch("/api/location");
-          const d2 = await r2.json();
-          setMembersLoc(d2.members || []);
-        }
-      },
-      (err) => {
-        console.warn("[geo] watch fail", err);
-        setIsTracking(false);
-        if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
-        alert("실시간 추적 실패: " + err.message);
-      },
-      { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
-    );
-    watchIdRef.current = id as unknown as number;
   };
   useEffect(() => {
     return () => {
@@ -1179,17 +1186,14 @@ export default function Dashboard() {
                   </div>
                   <div className="flex gap-2 flex-wrap">
                     <button onClick={shareLocation} disabled={sharing} className="px-5 py-3 rounded-2xl bg-[#4ECDC4] text-white font-black text-sm shadow disabled:opacity-60">
-                      {sharing ? "공유 중..." : "📍 내 위치 1회 공유"}
-                    </button>
-                    <button onClick={toggleTracking} className={`px-5 py-3 rounded-2xl font-black text-sm shadow border ${isTracking ? "bg-[#FF6B6B] text-white border-[#FF6B6B] animate-pulse" : "bg-[#FFE66D] text-[#2D3436] border-[#FFD54F]"}`}>
-                      {isTracking ? "⏸️ 실시간 추적 중지" : "▶️ 실시간 이동 추적"}
+                      {sharing ? "공유 중..." : "📍 위치 공유"}
                     </button>
                     <button onClick={recenterMap} className="px-4 py-3 rounded-2xl bg-white text-[#636E72] font-black text-sm shadow border border-[#FFE0CC]">
                       🎯 내 위치로
                     </button>
                   </div>
+                  <div className="mt-2 text-xs text-[#636E72]">위치 공유 한 번이면 이후 이동 시 5초/10m마다 자동 추적되어 지도에 실시간 반영됩니다.</div>
                   {geoError && <div className="mt-2 text-xs bg-[#FFE3E3] text-[#C0392B] px-3 py-2 rounded-xl font-bold">{geoError}</div>}
-                  {isTracking && <div className="mt-2 text-xs font-bold text-[#FF6B6B] flex items-center gap-1.5"><span className="w-2 h-2 bg-[#FF6B6B] rounded-full animate-ping" /> 핸드폰 들고 이동하면 5초/10m 마다 MongoDB에 자동 저장 → 지도에 프로필/이름 실시간 이동!</div>}
                 </div>
                 {coords && <div className="px-4 py-2 bg-[#FFF8F0] border-b border-[#FFE0CC] text-xs flex items-center gap-2"><span className="w-2 h-2 bg-[#00B894] rounded-full animate-pulse" /> 현재 기준: {coords.lat.toFixed(4)}, {coords.lng.toFixed(4)} {Math.abs(coords.lat-37.8813)<0.01 ? "(춘천)" : Math.abs(coords.lat-37.5665)<0.01 ? "(서울 - 권한 거부 시 기본값)" : ""} <button onClick={() => setCoords(null)} className="ml-auto text-[#FF6B6B] font-bold underline">다시 가져오기</button></div>}
                 <div ref={mapRef} className="w-full h-[320px] sm:h-[420px] bg-[#E8F5F3] relative" />
