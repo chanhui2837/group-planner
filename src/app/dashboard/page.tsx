@@ -310,6 +310,10 @@ export default function Dashboard() {
         mapInstance.current = map;
         markerLayerRef.current = L.layerGroup().addTo(map);
         hasCenteredRef.current = true;
+        // 모바일에서 파란 화면만 뜨는 버그 방지 — invalidateSize
+        setTimeout(() => map.invalidateSize(), 100);
+        setTimeout(() => map.invalidateSize(), 500);
+        setTimeout(() => map.invalidateSize(), 1000);
       }
       // 마커만 갱신 — 뷰는 건드리지 않음 (옆으로 넘겨도 점프 안 함)
       const layer = markerLayerRef.current;
@@ -372,6 +376,13 @@ export default function Dashboard() {
       L.marker([coords.lat, coords.lng]).addTo(layer).bindPopup(`내 위치 (공유 전)`);
     }
   }, [membersLoc, coords, user?.id, tab]);
+  // 모바일에서 지도 탭 전환 시 파란 화면만 뜨는 버그 방지
+  useEffect(() => {
+    if (tab === "map" && mapInstance.current) {
+      setTimeout(() => mapInstance.current?.invalidateSize(), 100);
+      setTimeout(() => mapInstance.current?.invalidateSize(), 500);
+    }
+  }, [tab]);
 
   const triggerAlarm = (a: AlarmData) => {
     setAlarm(a);
@@ -808,24 +819,29 @@ export default function Dashboard() {
       <AlarmOverlay alarm={alarm} onClose={() => setAlarm(null)} />
 
       {/* top bar */}
-      <header className="sticky top-0 z-20 bg-white/90 backdrop-blur-xl border-b border-[#FFE0CC] px-3 sm:px-6 py-3 flex items-center gap-3">
-        <Logo size={34} />
+      <header className="sticky top-0 z-20 bg-white/90 backdrop-blur-xl border-b border-[#FFE0CC] px-2 sm:px-6 py-2 sm:py-3 flex items-center gap-2 sm:gap-3">
+        <div className="hidden sm:block">
+          <Logo size={34} />
+        </div>
+        <div className="sm:hidden">
+          <Logo size={30} showText={false} />
+        </div>
         <div className="hidden sm:block h-6 w-px bg-[#FFE0CC] mx-2" />
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className="w-2.5 h-2.5 rounded-full animate-pulse shrink-0" style={{ background: group.color }} />
-            <h1 className="font-black text-sm sm:text-base truncate">{group.name}</h1>
-            <span className="inline-flex text-xs bg-[#FFE8D6] text-[#FF6B6B] font-black px-2 py-0.5 rounded-full">#{group.inviteCode}</span>
-            <span className="text-xs text-[#636E72] font-bold">· {group.memberCount}/10</span>
+          <div className="flex items-center gap-1 sm:gap-2">
+            <div className="w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full animate-pulse shrink-0" style={{ background: group.color }} />
+            <h1 className="font-black text-xs sm:text-base truncate max-w-[70px] sm:max-w-none">{group.name}</h1>
+            <span className="inline-flex whitespace-nowrap text-[10px] sm:text-xs bg-[#FFE8D6] text-[#FF6B6B] font-black px-1.5 sm:px-2 py-0.5 rounded-full">#{group.inviteCode}</span>
+            <span className="hidden sm:inline text-xs text-[#636E72] font-bold">· {group.memberCount}/10</span>
           </div>
           <div className="text-xs text-[#636E72] truncate hidden sm:block">{group.description || "함께하는 가족 그룹"}</div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1 sm:gap-2">
           <button onClick={enablePush} className="hidden sm:flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#FFE66D] border border-[#FFD54F] text-xs font-black text-[#2D3436] shrink-0" title="사이트 꺼져도 알림 받기">
             🔔 알림 켜기
           </button>
-          <button onClick={enablePush} className="sm:hidden p-2 rounded-xl bg-[#FFE66D] border border-[#FFD54F] text-xs" title="알림 켜기">
+          <button onClick={enablePush} className="sm:hidden p-1.5 rounded-xl bg-[#FFE66D] border border-[#FFD54F] text-xs" title="알림 켜기">
             🔔
           </button>
           <button
@@ -833,9 +849,9 @@ export default function Dashboard() {
               navigator.clipboard.writeText(group.inviteCode);
               triggerAlarm({ title: "📋 복사 완료!", body: `초대코드 ${group.inviteCode}가 복사됐어요. 가족에게 공유해보세요!`, type: "schedule" });
             }}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#FFF0E6] border border-[#FFE0CC] text-xs font-bold text-[#FF6B6B] shrink-0"
+            className="flex items-center gap-1 px-2 sm:px-3 py-1.5 sm:py-2 rounded-xl bg-[#FFF0E6] border border-[#FFE0CC] text-xs font-bold text-[#FF6B6B] shrink-0"
           >
-            <span className="hidden sm:inline">🔗 초대코드 복사</span>
+            <span className="hidden sm:inline">🔗 복사</span>
             <span className="sm:hidden">복사</span>
           </button>
 
