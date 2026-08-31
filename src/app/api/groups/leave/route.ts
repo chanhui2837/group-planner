@@ -30,8 +30,12 @@ export async function POST(req: NextRequest) {
       const Message = (await import("@/models/Message")).default;
       await Message.deleteMany({ groupId: group._id });
     } else {
+      let newOwnerName: string | null = null;
       if (isOwner) {
         group.owner = group.members[0] as any;
+        // 2번째로 들어온 사람이 자동으로 그룹장 (members[0]이 2번째 가입자)
+        const newOwner = await User.findById(group.owner).select("realName").lean() as any;
+        newOwnerName = newOwner?.realName || null;
       }
       await group.save();
       const Message = (await import("@/models/Message")).default;
@@ -41,6 +45,14 @@ export async function POST(req: NextRequest) {
         type: "system",
         content: `${user.realName}님이 그룹에서 나가셨습니다.`,
       });
+      if (isOwner && newOwnerName) {
+        await Message.create({
+          groupId: group._id,
+          sender: group.owner as any,
+          type: "system",
+          content: `👑 그룹장이 나가서 ${newOwnerName}님이 자동으로 새 그룹장이 되었습니다.`,
+        });
+      }
     }
 
     user.groupId = null;

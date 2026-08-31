@@ -906,7 +906,7 @@ export default function Dashboard() {
           <div className="bg-white rounded-[28px] shadow-[0_12px_32px_rgba(255,107,107,0.12)] border border-[#FFE0CC] p-6 flex flex-col">
             <div className="w-12 h-12 rounded-2xl bg-[#4ECDC4] flex items-center justify-center text-xl text-white">🔑</div>
             <h2 className="mt-4 text-[22px] font-black">그룹에 참여하기</h2>
-            <p className="text-sm text-[#636E72] mt-1">초대코드를 입력하거나, 아래 목록에서 찾아보세요.</p>
+            <p className="text-sm text-[#636E72] mt-1">초대코드 6자리 또는 그룹 이름으로 직접 입력해 입장하세요.</p>
 
             <div className="mt-6 flex gap-2">
               <input value={inviteCodeInput} onChange={(e) => setInviteCodeInput(e.target.value.toUpperCase())} placeholder="초대코드 6자리 (예: A3K9PX)" className="flex-1 px-4 py-3 rounded-2xl bg-[#FFF8F0] border border-[#FFE0CC] focus:outline-none focus:border-[#4ECDC4] text-sm font-mono tracking-widest uppercase" maxLength={6} />
@@ -914,32 +914,30 @@ export default function Dashboard() {
                 입장
               </button>
             </div>
+            <div className="mt-2 text-xs text-[#636E72] bg-[#FFF8F0] px-3 py-2 rounded-xl">💡 그룹 이름으로도 입장 가능 — 초대코드 대신 그룹 이름을 정확히 입력하고 입장 누르세요.</div>
 
             <div className="mt-6">
               <div className="flex items-center gap-2">
-                <input value={searchQ} onChange={(e) => setSearchQ(e.target.value)} placeholder="그룹 이름으로 검색..." className="flex-1 px-4 py-2.5 rounded-xl bg-[#FFF8F0] border border-[#FFE0CC] text-sm focus:outline-none focus:border-[#FF6B6B]" />
+                <input value={searchQ} onChange={(e) => setSearchQ(e.target.value)} placeholder="그룹 목록 보기 (검색만 가능)..." className="flex-1 px-4 py-2.5 rounded-xl bg-[#FFF8F0] border border-[#FFE0CC] text-sm focus:outline-none focus:border-[#FF6B6B]" />
                 <span className="text-xs text-[#B2BEC3] font-bold">{searchGroups.length}개</span>
               </div>
+              <div className="text-[11px] text-[#636E72] mt-1 ml-1">아래 목록은 보기 전용 — 참여하려면 위 입력칸에 초대코드나 이름을 직접 쳐야 합니다.</div>
 
               <div className="mt-3 space-y-2 max-h-[320px] overflow-y-auto pr-1">
-                {searchGroups.length === 0 && <div className="text-sm text-[#B2BEC3] text-center py-8">검색 결과가 없어요. 초대코드를 받아보세요!</div>}
+                {searchGroups.length === 0 && <div className="text-sm text-[#B2BEC3] text-center py-8">검색 결과가 없어요.</div>}
                 {searchGroups.map((g) => (
-                  <div key={g.id} className="flex items-center gap-3 p-3 rounded-2xl border border-[#FFE0CC] bg-[#FFFDF8] hover:bg-white transition">
+                  <div key={g.id} className="flex items-center gap-3 p-3 rounded-2xl border border-[#FFE0CC] bg-[#FFFDF8]">
                     <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-black text-sm shrink-0" style={{ background: g.color }}>
                       {g.name.slice(0, 1)}
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="font-black text-sm truncate">{g.name}</div>
                       <div className="text-xs text-[#636E72] truncate">{g.description || "설명 없음"} • {g.memberCount}/10명</div>
-                      <div className="text-[11px] font-mono font-bold text-[#FF6B6B]">#{g.inviteCode}</div>
+                      <div className="text-[11px] font-mono font-bold text-[#B2BEC3]">보기 전용</div>
                     </div>
-                    <button
-                      disabled={g.isFull}
-                      onClick={() => handleJoin(g.id, true)}
-                      className={`px-4 py-2 rounded-xl text-xs font-black shrink-0 ${g.isFull ? "bg-[#F1F2F6] text-[#B2BEC3]" : "bg-[#FFE66D] text-[#2D3436] hover:bg-[#FFD54F]"}`}
-                    >
-                      {g.isFull ? "가득 참" : "참여"}
-                    </button>
+                    <span className={`px-3 py-1.5 rounded-xl text-xs font-bold shrink-0 ${g.isFull ? "bg-[#FFE3E3] text-[#C0392B]" : "bg-[#F1F2F6] text-[#636E72]"}`}>
+                      {g.isFull ? "가득 참" : `${g.memberCount}/10`}
+                    </span>
                   </div>
                 ))}
               </div>
