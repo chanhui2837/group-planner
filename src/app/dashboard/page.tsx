@@ -174,6 +174,7 @@ export default function Dashboard() {
 
   // fetch weather by geo — 고정 도시 없음, 실제 기기 위치만 사용
   const [weatherError, setWeatherError] = useState<string | null>(null);
+  const [weatherAddr, setWeatherAddr] = useState<string | null>(null);
   const [geoError, setGeoError] = useState<string | null>(null);
   useEffect(() => {
     if (!coords) {
@@ -208,6 +209,19 @@ export default function Dashboard() {
       })
       .catch((e) => setWeatherError(e.message))
       .finally(() => setWeatherLoading(false));
+    // 정확한 위치명 역지오코딩
+    fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${coords.lat}&lon=${coords.lng}&accept-language=ko`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.display_name) {
+          // 한국 주소는 display_name이 길어서 앞 3~4개만 간략히
+          const parts = j.display_name.split(",").map((s: string) => s.trim()).reverse();
+          // 예: 대한민국, 강원특별자치도, 춘천시, 우두동 ...
+          const short = parts.slice(0, 4).join(" ");
+          setWeatherAddr(j.display_name);
+        } else setWeatherAddr(null);
+      })
+      .catch(() => setWeatherAddr(null));
   }, [coords]);
 
   // polling group messages
@@ -1340,7 +1354,7 @@ export default function Dashboard() {
                       🎯 내 위치로
                     </button>
                   </div>
-                  <div className="mt-2 text-xs text-[#636E72]">위치 공유 한 번이면 이후 이동 시 5초/10m마다 자동 추적되어 지도에 실시간 반영됩니다.</div>
+                  <div className="mt-2 text-xs text-[#636E72]">위치 공유 한 번이면 이후 이동 시 5초/10m마다 자동 추적. <span className="font-bold text-[#FF6B6B]">웹은 사이트가 켜져 있을 때만</span>, <span className="font-bold text-[#00B894]">앱은 꺼져도 계속 동기화</span> — <a href="/download" className="underline text-[#4ECDC4] font-bold">앱 설치하기</a></div>
                   {geoError && <div className="mt-2 text-xs bg-[#FFE3E3] text-[#C0392B] px-3 py-2 rounded-xl font-bold">{geoError}</div>}
                 </div>
                 {coords && <div className="px-4 py-2 bg-[#FFF8F0] border-b border-[#FFE0CC] text-xs flex items-center gap-2"><span className="w-2 h-2 bg-[#00B894] rounded-full animate-pulse" /> 현재 기준: {coords.lat.toFixed(4)}, {coords.lng.toFixed(4)} {Math.abs(coords.lat-37.8813)<0.01 ? "(춘천)" : Math.abs(coords.lat-37.5665)<0.01 ? "(서울 - 권한 거부 시 기본값)" : ""} <button onClick={() => setCoords(null)} className="ml-auto text-[#FF6B6B] font-bold underline">다시 가져오기</button></div>}
@@ -1383,7 +1397,8 @@ export default function Dashboard() {
                 <div className="relative">
                   <div className="flex items-start justify-between">
                     <div>
-                      <div className="text-sm font-bold opacity-90 flex items-center gap-2">현재 날씨 • {coords ? `${coords.lat.toFixed(2)}, ${coords.lng.toFixed(2)}` : "위치 확인 중"} <button onClick={() => setCoords({ lat: 37.5665, lng: 126.978 })} className="ml-2 px-2 py-0.5 rounded-full bg-white/20 text-xs">서울</button><button onClick={() => setCoords(null)} className="px-2 py-0.5 rounded-full bg-white/80 text-[#2D3436] text-xs font-black">내 위치</button></div>
+                      <div className="text-sm font-bold opacity-90 flex items-center gap-2 flex-wrap">현재 날씨 • {weatherAddr ? weatherAddr.split(",").slice(0,3).join(", ").slice(0,36) : coords ? `${coords.lat.toFixed(2)}, ${coords.lng.toFixed(2)}` : "위치 확인 중"} <button onClick={() => setCoords({ lat: 37.5665, lng: 126.978 })} className="ml-2 px-2 py-0.5 rounded-full bg-white/20 text-xs">서울</button><button onClick={() => setCoords(null)} className="px-2 py-0.5 rounded-full bg-white/80 text-[#2D3436] text-xs font-black">내 위치</button></div>
+                      {weatherAddr && <div className="text-xs opacity-80 mt-1 line-clamp-1">{weatherAddr}</div>}
                       {weatherLoading ? (
                         <div className="mt-6 text-white/80">불러오는 중...</div>
                       ) : weatherError ? (
