@@ -15,7 +15,9 @@ const jwt = require("jsonwebtoken");
 const prod = process.argv.includes("--prod") || process.env.NODE_ENV === "production";
 const dev = !prod;
 const port = parseInt(process.env.PORT || "3000", 10);
-const hostname = process.env.HOSTNAME || "0.0.0.0";
+// Render는 HOSTNAME 환경변수에 컨테이너 호스트명을 주입하므로,
+// 그걸 쓰면 프록시 연결이 안 됨(502). 항상 0.0.0.0에 바인딩.
+const hostname = "0.0.0.0";
 
 const JWT_SECRET = process.env.JWT_SECRET || "family-planner-secret-key-change-me-32chars!";
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017/family-planner";
