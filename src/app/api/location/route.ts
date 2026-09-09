@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/db";
 import User from "@/models/User";
 import { verifyToken } from "@/lib/auth";
-import { isGroupMember, loadUserWithGroups } from "@/lib/groups";
+import { getGroupIds, isGroupMember, loadUserWithGroups } from "@/lib/groups";
+import { emitToGroup } from "@/lib/realtime";
 
 export async function GET(req: NextRequest) {
   try {
@@ -50,6 +51,15 @@ export async function POST(req: NextRequest) {
     await User.findByIdAndUpdate(payload.userId, {
       location: { lat, lng, address: address || "", updatedAt: new Date() },
     });
+    // 속한 모든 그룹 방에 위치 갱신 알림 (지도 실시간 반영)
+    try {
+      const me = await loadUserWithGroups(payload.userId);
+      if (me) {
+        for (const gid of getGroupIds(me)) {
+          emitToGroup(gid, "location:update", { userId: payload.userId });
+        }
+      }
+    } catch {}
     return NextResponse.json({ ok: true });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });

@@ -29,6 +29,8 @@ export interface IMessage extends Document {
   // direct message fields (reuse same collection with isDirect)
   isDirect?: boolean;
   receiver?: mongoose.Types.ObjectId;
+  // 읽음 확인: 읽은 유저 id 목록 (작성자는 생성 시 자동 포함)
+  readBy?: mongoose.Types.ObjectId[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -62,12 +64,14 @@ const MessageSchema = new Schema<IMessage>(
     mediaType: { type: String, default: "" },
     isDirect: { type: Boolean, default: false },
     receiver: { type: Schema.Types.ObjectId, ref: "User" },
+    readBy: { type: [{ type: Schema.Types.ObjectId, ref: "User" }], default: [] },
   },
   { timestamps: true }
 );
 
 MessageSchema.index({ groupId: 1, createdAt: -1 });
 MessageSchema.index({ isDirect: 1, sender: 1, receiver: 1 });
+MessageSchema.index({ groupId: 1, readBy: 1 });
 
 const Message: Model<IMessage> = mongoose.models.Message || mongoose.model<IMessage>("Message", MessageSchema);
 export default Message;

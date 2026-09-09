@@ -2,6 +2,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useStore, MAX_GROUPS } from "@/lib/store";
+import { getSocket, disconnectSocket } from "@/lib/socket";
 import Logo from "@/components/Logo";
 import AlarmOverlay, { AlarmData } from "@/components/AlarmOverlay";
 import PWAInstall from "@/components/PWAInstall";
@@ -28,7 +29,9 @@ export default function Dashboard() {
       setDmMessages([]);
       setMembersLoc([]);
       setDmTarget(null);
+      setNewArrivals(0);
       lastMsgCount.current = 0;
+      // chatInitRef는 유지 → 새 그룹 id와 다르면 첫-안읽음 스크롤이 다시 동작
     } catch (e: any) {
       alert(e.message);
     } finally {
@@ -54,6 +57,21 @@ export default function Dashboard() {
   const lastMsgCount = useRef(0);
   const [chatMedia, setChatMedia] = useState<{ url: string; type: string } | null>(null);
   const chatFileRef = useRef<HTMLInputElement>(null);
+
+  // realtime (Socket.IO) + 읽음 확인
+  const [socketOn, setSocketOn] = useState(false);
+  const [unread, setUnread] = useState<Record<string, number>>({});
+  const [dmUnreadTotal, setDmUnreadTotal] = useState(0);
+  const [dmUnreadBy, setDmUnreadBy] = useState<Record<string, number>>({});
+  const chatInitRef = useRef<string | null>(null); // 첫-안읽음 스크롤 완료한 그룹
+  const [newArrivals, setNewArrivals] = useState(0); // 아래에 새 메시지 pill용
+  const markTimer = useRef<any>(null);
+  const userRef = useRef<any>(null);
+  userRef.current = user;
+  const groupRef = useRef<any>(null);
+  groupRef.current = group;
+  const tabRef = useRef<Tab>(tab);
+  tabRef.current = tab;
 
   // schedule / vote modals
   const [showScheduleModal, setShowScheduleModal] = useState(false);
@@ -271,9 +289,9 @@ export default function Dashboard() {
       setMessages(msgs);
     };
     fetchMsgs();
-    interval = setInterval(fetchMsgs, 2500);
+    interval = setInterval(fetchMsgs, socketOn ? 15000 : 2500); // 소켓 연결 시 폴링은 가벼운 백업만
     return () => clearInterval(interval);
-  }, [user, group?.id]);
+  }, [user, group?.id, socketOn]);
 
   // auto scroll — 사용자가 위로 올렸을 땐 자동 이동 안 함
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -305,7 +323,7 @@ export default function Dashboard() {
     return () => clearInterval(id);
   }, [group?.id, tab]);
 
-  // DM polling (활성 그룹 기준)
+  // DM polling (활성 그룹 기준) — 소켓 연결 시 백업용으로만 느리게
   useEffect(() => {
     if (!dmTarget || !group) return;
     const gid = group.id;
@@ -315,9 +333,281 @@ export default function Dashboard() {
       if (data.messages) setDmMessages(data.messages);
     };
     fetchDm();
-    const id = setInterval(fetchDm, 2000);
+    const id = setInterval(fetchDm, socketOn ? 15000 : 2000);
     return () => clearInterval(id);
-  }, [dmTarget, group?.id]);
+  }, [dmTarget, group?.id, socketOn]);
+
+  // ---- 실시간 + 읽음 확인 헬퍼 ----
+  const messagesRef = useRef<any[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+  const dmTargetRef = useRef<string | null>(null);
+  useEffect(() => {
+    dmTargetRef.current = dmTarget;
+  }, [dmTarget]);
+
+  const isChatNearBottom = () => {
+    const el = chatContainerRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+  };
+  const scrollChatToBottom = (smooth = true) => {
+    if (smooth) chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    else chatEndRef.current?.scrollIntoView({ behavior: "auto" } as any);
+    setNewArrivals(0);
+  };
+  const flashMessage = (id: string) => {
+    const el = document.getElementById(`msg-${id}`);
+    if (!el) return;
+    el.scrollIntoView({ block: "center" });
+    const html = el as HTMLElement;
+    html.style.transition = "box-shadow 0.3s";
+    html.style.boxShadow = "0 0 0 3px #FF6B6B, 0 8px 24px rgba(255,107,107,0.35)";
+    html.style.borderRadius = "18px";
+    setTimeout(() => {
+      html.style.boxShadow = "";
+    }, 2600);
+  };
+  const scrollToFirstUnread = () => {
+    const u = userRef.current;
+    const list = messagesRef.current;
+    if (!u || list.length === 0) return;
+    const first = list.find((m: any) => m.sender && m.sender.id !== u.id && !((m.readBy || []) as string[]).includes(u.id));
+    if (first) {
+      flashMessage(first.id);
+    } else {
+      scrollChatToBottom();
+    }
+  };
+
+  // 안 읽은 개수 동기화
+  const fetchUnread = async () => {
+    try {
+      const res = await fetch("/api/messages/unread", { cache: "no-store" });
+      if (!res.ok) return;
+      const d = await res.json();
+      setUnread(d.groups || {});
+      setDmUnreadTotal(d.dmTotal || 0);
+      setDmUnreadBy(d.dmBy || {});
+    } catch {}
+  };
+
+  // 그룹채팅 읽음 처리 (마지막 메시지 시각까지)
+  const doMarkRead = async () => {
+    const g = groupRef.current;
+    const u = userRef.current;
+    const list = messagesRef.current;
+    if (!g || !u || list.length === 0) return;
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+    const last = list[list.length - 1];
+    try {
+      const res = await fetch("/api/messages/read", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ groupId: g.id, upTo: last.createdAt }),
+      });
+      if (!res.ok) return;
+      setMessages((prev) => prev.map((m) => ((m.readBy || []) as string[]).includes(u.id) ? m : { ...m, readBy: [...(m.readBy || []), u.id] }));
+      setUnread((prev) => ({ ...prev, [g.id]: 0 }));
+      setNewArrivals(0);
+    } catch {}
+  };
+  const scheduleMarkRead = () => {
+    if (markTimer.current) clearTimeout(markTimer.current);
+    markTimer.current = setTimeout(doMarkRead, 1200);
+  };
+
+  // 1:1 읽음 처리
+  const dmMarkedRef = useRef<Record<string, string>>({});
+  const dmMessagesRef = useRef<any[]>([]);
+  useEffect(() => {
+    dmMessagesRef.current = dmMessages;
+  }, [dmMessages]);
+  const markDmRead = async (partnerId: string) => {
+    const g = groupRef.current;
+    const dmList = dmMessagesRef.current;
+    if (!g || dmList.length === 0) return;
+    const last = dmList[dmList.length - 1];
+    if (dmMarkedRef.current[partnerId] === last.id) return;
+    dmMarkedRef.current[partnerId] = last.id;
+    try {
+      await fetch("/api/messages/read", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ groupId: g.id, upTo: last.createdAt, directWith: partnerId }),
+      });
+      fetchUnread();
+    } catch {}
+  };
+
+  // ---- Socket.IO 실시간 수신 ----
+  const groupIdsKey = groups.map((g) => g.id).join(",");
+  useEffect(() => {
+    if (!user || groups.length === 0) return;
+    const s = getSocket();
+    const me = user.id;
+    const joined = new Set<string>();
+
+    const joinAll = () => {
+      for (const g of groups) {
+        if (!joined.has(g.id)) {
+          s.emit("join-group", g.id);
+          joined.add(g.id);
+        }
+      }
+    };
+    const handleConnect = () => {
+      setSocketOn(true);
+      joinAll();
+      fetchUnread();
+    };
+    const handleDisconnect = () => setSocketOn(false);
+
+    const handleMessageNew = (m: any) => {
+      if (!m || !m.groupId) return;
+      const active = groupRef.current;
+      if (!active || m.groupId !== active.id) {
+        // 다른 그룹 새 글 → 배지만 증가
+        if (!m.sender || m.sender.id !== me) {
+          setUnread((prev) => ({ ...prev, [m.groupId]: (prev[m.groupId] || 0) + 1 }));
+        }
+        return;
+      }
+      setMessages((prev) => {
+        if (prev.some((x) => x.id === m.id)) return prev;
+        return [...prev, m];
+      });
+      lastMsgCount.current += 1; // 폴링 중복 알람 방지
+      const mine = m.sender?.id === me;
+      if (!mine && m.type === "schedule") {
+        triggerAlarm({ title: `📅 새 일정: ${m.schedule?.title}`, body: `${m.sender.realName}님이 일정을 올렸어요! ${m.schedule?.date} ${m.schedule?.time}`, type: "schedule" });
+      }
+      if (!mine && m.type === "vote") {
+        triggerAlarm({ title: `🗳️ 새 투표: ${m.vote?.question}`, body: `${m.sender.realName}님이 투표를 올렸어요! 참여해보세요.`, type: "vote" });
+      }
+      const viewing = tabRef.current === "chat" && typeof document !== "undefined" && document.visibilityState === "visible" && isChatNearBottom();
+      if (!viewing && !mine) {
+        setUnread((prev) => ({ ...prev, [active.id]: (prev[active.id] || 0) + 1 }));
+        setNewArrivals((n) => n + 1);
+      }
+    };
+
+    const handleVoteUpdate = (p: any) => {
+      if (!p || !p.messageId) return;
+      const active = groupRef.current;
+      if (active && p.groupId && p.groupId !== active.id) return;
+      setMessages((prev) => prev.map((m) => (m.id === p.messageId ? { ...m, vote: { ...(m.vote || {}), ...p.vote, options: p.vote.options } } : m)));
+    };
+
+    const handleDmNew = (m: any) => {
+      if (!m || !m.sender) return;
+      if (m.sender.id === dmTargetRef.current && tabRef.current === "dm") {
+        setDmMessages((prev) => {
+          if (prev.some((x) => x.id === m.id)) return prev;
+          return [...prev, m];
+        });
+        markDmRead(m.sender.id);
+      } else if (m.sender.id !== me) {
+        setDmUnreadTotal((t) => t + 1);
+        setDmUnreadBy((prev) => ({ ...prev, [m.sender.id]: (prev[m.sender.id] || 0) + 1 }));
+      }
+    };
+
+    const handleLocationUpdate = async () => {
+      if (tabRef.current !== "map") return;
+      const active = groupRef.current;
+      if (!active) return;
+      try {
+        const res = await fetch(`/api/location?groupId=${active.id}`);
+        const data = await res.json();
+        setMembersLoc(data.members || []);
+      } catch {}
+    };
+
+    s.on("connect", handleConnect);
+    s.on("disconnect", handleDisconnect);
+    s.on("message:new", handleMessageNew);
+    s.on("vote:update", handleVoteUpdate);
+    s.on("dm:new", handleDmNew);
+    s.on("location:update", handleLocationUpdate);
+    try {
+      if (!s.connected) s.connect();
+      else {
+        setSocketOn(true);
+        joinAll();
+      }
+    } catch {}
+    return () => {
+      for (const gid of joined) s.emit("leave-group", gid);
+      s.off("connect", handleConnect);
+      s.off("disconnect", handleDisconnect);
+      s.off("message:new", handleMessageNew);
+      s.off("vote:update", handleVoteUpdate);
+      s.off("dm:new", handleDmNew);
+      s.off("location:update", handleLocationUpdate);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, groupIdsKey]);
+
+  // 안 읽은 개수: 진입 시 + 30초마다 보정
+  useEffect(() => {
+    if (!user) return;
+    fetchUnread();
+    const id = setInterval(fetchUnread, 30000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, groups.length]);
+
+  // 첫 진입/그룹전환: 첫 안읽음 위치로 스크롤, 없으면 맨 아래 (버그 수정)
+  useEffect(() => {
+    if (!group || !user || messages.length === 0) return;
+    if (chatInitRef.current === group.id) return;
+    chatInitRef.current = group.id;
+    const t = setTimeout(() => {
+      const first = messages.find((m: any) => m.sender && m.sender.id !== user.id && !((m.readBy || []) as string[]).includes(user.id));
+      if (first) {
+        flashMessage(first.id);
+      } else {
+        chatEndRef.current?.scrollIntoView({ behavior: "auto" } as any);
+      }
+    }, 200);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, group?.id]);
+
+  // 채팅 보는 중이면 읽음 처리 (탭 전환·새 메시지·복귀 시)
+  useEffect(() => {
+    if (tab !== "chat" || !group || messages.length === 0) return;
+    scheduleMarkRead();
+    return () => {
+      if (markTimer.current) clearTimeout(markTimer.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, tab, group?.id]);
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "visible" && tabRef.current === "chat") scheduleMarkRead();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // 언마운트 시 타이머·소켓 정리
+  useEffect(() => {
+    return () => {
+      if (markTimer.current) clearTimeout(markTimer.current);
+      disconnectSocket();
+    };
+  }, []);
+
+  // 1:1 대화 열람 중이면 읽음 처리
+  useEffect(() => {
+    if (!dmTarget || dmMessages.length === 0) return;
+    const t = setTimeout(() => markDmRead(dmTarget), 1000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dmMessages, dmTarget]);
 
   // 가입 그룹은 있는데 활성 그룹이 비어있으면 첫 그룹으로 자동 전환
   useEffect(() => {
@@ -1061,7 +1351,7 @@ export default function Dashboard() {
           >
             {groups.map((g) => (
               <option key={g.id} value={g.id}>
-                {g.name} ({g.memberCount}/10)
+                {g.name}{(unread[g.id] || 0) > 0 ? ` (${unread[g.id]})` : ""} ({g.memberCount}/10)
               </option>
             ))}
           </select>
@@ -1129,6 +1419,12 @@ export default function Dashboard() {
                   <div className={`text-sm font-black ${tab === n.id ? "text-white" : ""}`}>{n.label}</div>
                   <div className={`text-xs ${tab === n.id ? "text-white/80" : "text-[#636E72]"}`}>{n.desc}</div>
                 </span>
+                {n.id === "chat" && (unread[group.id] || 0) > 0 && (
+                  <span className="min-w-[22px] px-1.5 py-0.5 rounded-full bg-[#FF6B6B] text-white text-[11px] font-black text-center shrink-0">{unread[group.id] > 99 ? "99+" : unread[group.id]}</span>
+                )}
+                {n.id === "dm" && dmUnreadTotal > 0 && (
+                  <span className="min-w-[22px] px-1.5 py-0.5 rounded-full bg-[#4ECDC4] text-white text-[11px] font-black text-center shrink-0">{dmUnreadTotal > 99 ? "99+" : dmUnreadTotal}</span>
+                )}
                 {tab === n.id && <span className="w-2 h-2 bg-white rounded-full animate-pulse" />}
               </button>
             ))}
@@ -1176,6 +1472,11 @@ export default function Dashboard() {
                     <span className={`block text-xs font-black truncate ${g.id === group.id ? "text-white" : "text-[#2D3436]"}`}>{g.name}</span>
                     <span className={`block text-[10px] ${g.id === group.id ? "text-white/80" : "text-[#B2BEC3]"}`}>{g.memberCount}/10명{g.id === group.id ? " · 활동 중" : ""}</span>
                   </span>
+                  {(unread[g.id] || 0) > 0 && (
+                    <span className={`min-w-[22px] px-1.5 py-0.5 rounded-full text-[11px] font-black text-center shrink-0 ${g.id === group.id ? "bg-white text-[#FF6B6B]" : "bg-[#FF6B6B] text-white"}`}>
+                      {unread[g.id] > 99 ? "99+" : unread[g.id]}
+                    </span>
+                  )}
                   {g.id === group.id && <span className="w-2 h-2 bg-white rounded-full animate-pulse shrink-0" />}
                 </button>
               ))}
@@ -1212,27 +1513,46 @@ export default function Dashboard() {
                   </div>
                   <div>
                     <div className="text-sm font-black">그룹 채팅</div>
-                    <div className="text-xs text-[#636E72]">{group.name} · 실시간 동기화 중...</div>
+                    <div className="text-xs text-[#636E72]">{group.name} · {socketOn ? "실시간 연결됨 ⚡" : "실시간 동기화 중..."}</div>
                   </div>
                 </div>
+                {(unread[group.id] || 0) > 0 && (
+                  <button onClick={scrollToFirstUnread} className="px-3 py-1.5 rounded-full bg-[#FF6B6B] text-white text-xs font-black shadow animate-pulse">
+                    {unread[group.id]}개 안 읽음 · 이동 ↓
+                  </button>
+                )}
               </div>
 
               {/* messages */}
-              <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 bg-[#FFFBF5]">
+              <div
+                ref={chatContainerRef}
+                onScroll={() => {
+                  if (isChatNearBottom()) setNewArrivals(0);
+                }}
+                className="relative flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 bg-[#FFFBF5]"
+              >
+                {newArrivals > 0 && (
+                  <button
+                    onClick={() => scrollChatToBottom()}
+                    className="sticky top-2 z-10 mx-auto flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#2D3436] text-white text-xs font-black shadow-lg"
+                  >
+                    ↓ 새 메시지 {newArrivals}개
+                  </button>
+                )}
                 {messages.length === 0 && <div className="text-center py-16 text-[#B2BEC3] text-sm">아직 메시지가 없어요. 첫 메시지를 남겨보세요! 👋</div>}
                 {messages.map((m) => {
                   const isMe = m.sender?.id === user.id;
                   const isSystem = m.type === "system";
                   if (isSystem) {
                     return (
-                      <div key={m.id} className="flex justify-center">
+                      <div key={m.id} id={`msg-${m.id}`} className="flex justify-center">
                         <span className="text-xs bg-[#FFE8D6] text-[#8B5A2B] px-3 py-1.5 rounded-full font-bold">{m.content}</span>
                       </div>
                     );
                   }
                   if (m.type === "schedule") {
                     return (
-                      <div key={m.id} className={`flex gap-2 ${isMe ? "justify-end" : "justify-start"}`}>
+                      <div key={m.id} id={`msg-${m.id}`} className={`flex gap-2 ${isMe ? "justify-end" : "justify-start"}`}>
                         {!isMe && (
                           <div className="w-8 h-8 rounded-full bg-[#FFE8D6] flex items-center justify-center font-black text-xs shrink-0 overflow-hidden">
                             {m.sender?.avatar ? <img src={m.sender.avatar} className="w-full h-full object-cover" /> : m.sender?.realName?.slice(0, 1)}
@@ -1259,7 +1579,7 @@ export default function Dashboard() {
                   if (m.type === "vote") {
                     const total = m.vote.options.reduce((s: number, o: any) => s + o.count, 0) || 1;
                     return (
-                      <div key={m.id} className="flex justify-center">
+                      <div key={m.id} id={`msg-${m.id}`} className="flex justify-center">
                         <div className="w-full max-w-[520px] bg-white rounded-[20px] border-2 border-[#4ECDC4]/30 shadow p-4">
                           <div className="flex items-center gap-2">
                             <span className="px-2.5 py-1 rounded-full bg-[#4ECDC4] text-white text-xs font-black">🗳️ 투표</span>
@@ -1289,7 +1609,7 @@ export default function Dashboard() {
                   }
                   if (m.type === "image") {
                     return (
-                      <div key={m.id} className={`flex gap-2 ${isMe ? "justify-end" : "justify-start"}`}>
+                      <div key={m.id} id={`msg-${m.id}`} className={`flex gap-2 ${isMe ? "justify-end" : "justify-start"}`}>
                         {!isMe && (
                           <div className="w-8 h-8 rounded-full bg-[#FFE8D6] flex items-center justify-center font-black text-xs shrink-0 overflow-hidden">
                             {m.sender?.avatar ? <img src={m.sender.avatar} className="w-full h-full object-cover" /> : m.sender?.realName?.slice(0, 1)}
@@ -1308,7 +1628,7 @@ export default function Dashboard() {
                   }
                   if (m.type === "video") {
                     return (
-                      <div key={m.id} className={`flex gap-2 ${isMe ? "justify-end" : "justify-start"}`}>
+                      <div key={m.id} id={`msg-${m.id}`} className={`flex gap-2 ${isMe ? "justify-end" : "justify-start"}`}>
                         {!isMe && (
                           <div className="w-8 h-8 rounded-full bg-[#FFE8D6] flex items-center justify-center font-black text-xs shrink-0 overflow-hidden">
                             {m.sender?.avatar ? <img src={m.sender.avatar} className="w-full h-full object-cover" /> : m.sender?.realName?.slice(0, 1)}
@@ -1326,7 +1646,7 @@ export default function Dashboard() {
                     );
                   }
                   return (
-                    <div key={m.id} className={`flex gap-2 ${isMe ? "justify-end" : "justify-start"}`}>
+                    <div key={m.id} id={`msg-${m.id}`} className={`flex gap-2 ${isMe ? "justify-end" : "justify-start"}`}>
                       {!isMe && (
                         <div className="w-8 h-8 rounded-full bg-[#FFE8D6] flex items-center justify-center font-black text-xs shrink-0 overflow-hidden">
                           {m.sender?.avatar ? <img src={m.sender.avatar} className="w-full h-full object-cover" /> : m.sender?.realName?.slice(0, 1)}
@@ -1405,10 +1725,15 @@ export default function Dashboard() {
                         <div className="w-8 h-8 rounded-full overflow-hidden bg-[#FFE8D6] flex items-center justify-center font-black text-xs shrink-0">
                           {m.avatar ? <img src={m.avatar} className="w-full h-full object-cover" /> : m.realName.slice(0, 1)}
                         </div>
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1">
                           <div className="text-xs font-black truncate">{m.realName}</div>
                           <div className={`text-[11px] truncate ${dmTarget === m.id ? "text-white/80" : "text-[#636E72]"}`}>@{m.username}</div>
                         </div>
+                        {(dmUnreadBy[m.id] || 0) > 0 && (
+                          <span className={`min-w-[20px] px-1.5 py-0.5 rounded-full text-[10px] font-black text-center shrink-0 ${dmTarget === m.id ? "bg-white text-[#FF6B6B]" : "bg-[#4ECDC4] text-white"}`}>
+                            {dmUnreadBy[m.id] > 99 ? "99+" : dmUnreadBy[m.id]}
+                          </span>
+                        )}
                       </button>
                     ))}
                   {group.members.filter((m) => m.id !== user.id).length === 0 && <div className="text-xs text-[#B2BEC3] text-center py-8">다른 멤버가 없어요</div>}
@@ -1649,9 +1974,19 @@ export default function Dashboard() {
           { id: "weather", icon: "⛅", label: "날씨" },
           { id: "members", icon: "👨‍👩‍👦", label: "멤버" },
         ].map((n) => (
-          <button key={n.id} onClick={() => setTab(n.id as Tab)} className={`flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl ${tab === n.id ? "bg-[#FF6B6B] text-white" : "text-[#636E72]"}`}>
+          <button key={n.id} onClick={() => setTab(n.id as Tab)} className={`relative flex flex-col items-center gap-0.5 px-3 py-1.5 rounded-xl ${tab === n.id ? "bg-[#FF6B6B] text-white" : "text-[#636E72]"}`}>
             <span className="text-lg">{n.icon}</span>
             <span className="text-[10px] font-black">{n.label}</span>
+            {n.id === "chat" && (unread[group.id] || 0) > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[20px] px-1 py-0.5 rounded-full bg-[#FF6B6B] border-2 border-white text-white text-[10px] font-black text-center">
+                {unread[group.id] > 99 ? "99+" : unread[group.id]}
+              </span>
+            )}
+            {n.id === "dm" && dmUnreadTotal > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[20px] px-1 py-0.5 rounded-full bg-[#4ECDC4] border-2 border-white text-white text-[10px] font-black text-center">
+                {dmUnreadTotal > 99 ? "99+" : dmUnreadTotal}
+              </span>
+            )}
           </button>
         ))}
       </nav>
@@ -1671,7 +2006,7 @@ export default function Dashboard() {
                     {g.name.slice(0, 1)}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="font-black text-sm truncate">{g.name}{g.id === group.id && <span className="ml-1.5 text-[10px] bg-[#FF6B6B] text-white px-1.5 py-0.5 rounded-full">활동 중</span>}</div>
+                    <div className="font-black text-sm truncate">{g.name}{g.id === group.id && <span className="ml-1.5 text-[10px] bg-[#FF6B6B] text-white px-1.5 py-0.5 rounded-full">활동 중</span>}{(unread[g.id] || 0) > 0 && <span className="ml-1.5 text-[10px] bg-[#FF6B6B] text-white px-1.5 py-0.5 rounded-full">{unread[g.id] > 99 ? "99+" : unread[g.id]} 안 읽음</span>}</div>
                     <div className="text-xs text-[#636E72] truncate">#{g.inviteCode} · {g.memberCount}/10명</div>
                   </div>
                   {g.id !== group.id && (

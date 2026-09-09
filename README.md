@@ -7,7 +7,8 @@
 - **회원가입/로그인** — 실명, 아이디, 비밀번호, 이메일 4종 입력. `bcrypt` 해시 + `jose` JWT (httpOnly 쿠키, 30일). MongoDB에 유저 전체 문서 저장, 실시간 동기화.
 - **프로필 사진 변경** — 2MB 이하 이미지 base64로 MongoDB에 저장, 모든 멤버에게 즉시 반영.
 - **그룹** — 생성 / 초대코드(6자리 영문숫자)나 그룹 이름으로 참가 / 검색 / 탈퇴 / 삭제(그룹장만). 그룹당 최대 10명, 한 사람당 최대 3개 그룹. 헤더 드롭다운·사이드바·👥 내 그룹 모달에서 그룹 전환하며 각 그룹 채팅/일정/투표/지도 활동 가능.
-- **그룹 채팅** — 텍스트 + 일정 + 투표 카드가 같은 타임라인에. 2.5초 폴링으로 실시간 동기화 (Socket.IO 확장 가능).
+- **그룹 채팅** — 텍스트 + 일정 + 투표 카드가 같은 타임라인에. Socket.IO 실시간 수신(`server.js`, 그룹 방 + 개인 방) + 소켓 끊김 시 폴링 폴백(15초/2.5초).
+- **읽음 확인** — 메시지별 `readBy`, 채팅 열람 시 자동 읽음 처리, 사이드바·헤더·모바일네비·DM목록에 안 읽음 배지. 진입 시 첫 안읽음 위치로 스크롤(없으면 맨 아래).
 - **큼직한 알림** — 일정/투표가 올라오면 **화면 전체 오버레이 + 진동 + Web Audio 사운드 + Web Notification + Service Worker Push** 5중 알림. 사이트가 꺼져 있어도 Service Worker가 깨워서 알림.
 - **투표** — 채팅 안에서 투표 생성(2~6개 선택지, 단일/복수, 마감시간), 투표 즉시 반영, 퍼센트 바 표시.
 - **개인 채팅 (1:1)** — 같은 그룹 멤버끼리만 가능.
@@ -50,8 +51,8 @@ JWT_SECRET=아주_길고_무작위한_문자열_32자_이상
 
 ```bash
 npm install
-npm run dev   # http://localhost:3000
-npm run build && npm start # 프로덕션
+npm run dev   # node server.js (Next + Socket.IO) → http://localhost:3000
+npm run build && npm start # node server.js --prod (Render 시작 명령: npm start 그대로)
 ```
 
 > MongoDB가 꺼져 있으면 API가 500을 반환하고, UI에서 “회원가입 실패: …” 로 표시됩니다. `.env.local`의 `MONGODB_URI`를 확인하세요.
@@ -73,6 +74,5 @@ npm run build && npm start # 프로덕션
 
 ## 🔧 확장 아이디어
 
-- `server.js`에 Socket.IO 실시간 서버 추가 (현재는 폴링, 주석으로 구조 준비됨)
 - `web-push`로 VAPID 푸시 구독 (`/api/push/subscribe` 확장)
 - 사진·파일 업로드 S3 연동

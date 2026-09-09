@@ -3,6 +3,17 @@ import { connectDB } from "@/lib/db";
 import Message from "@/models/Message";
 import { verifyToken } from "@/lib/auth";
 import { isGroupMember } from "@/lib/groups";
+import { emitToGroup } from "@/lib/realtime";
+
+function voteJson(vote: any) {
+  return {
+    question: vote.question,
+    options: vote.options.map((o: any) => ({ text: o.text, votes: o.votes.map((v: any) => String(v)), count: o.votes.length })),
+    allowMultiple: vote.allowMultiple,
+    expiresAt: vote.expiresAt,
+    closed: vote.closed,
+  };
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -42,7 +53,9 @@ export async function POST(req: NextRequest) {
       if (currentOpt.votes.some((v: any) => String(v) === userId)) {
         currentOpt.votes = currentOpt.votes.filter((v: any) => String(v) !== userId);
         await msg.save();
-        return NextResponse.json({ ok: true, vote: msg.vote });
+        const vj = voteJson(msg.vote);
+        emitToGroup(String(msg.groupId), "vote:update", { messageId: String(msg._id), groupId: String(msg.groupId), vote: vj });
+        return NextResponse.json({ ok: true, vote: vj });
       }
     }
 
@@ -52,7 +65,9 @@ export async function POST(req: NextRequest) {
     }
 
     await msg.save();
-    return NextResponse.json({ ok: true, vote: { question: msg.vote.question, options: msg.vote.options.map((o: any) => ({ text: o.text, votes: o.votes.map((v: any) => String(v)), count: o.votes.length })), allowMultiple: msg.vote.allowMultiple } });
+    const out = voteJson(msg.vote);
+    emitToGroup(String(msg.groupId), "vote:update", { messageId: String(msg._id), groupId: String(msg.groupId), vote: out });
+    return NextResponse.json({ ok: true, vote: out });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }

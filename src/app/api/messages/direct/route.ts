@@ -5,6 +5,7 @@ import User from "@/models/User";
 import Group from "@/models/Group";
 import { verifyToken } from "@/lib/auth";
 import { loadUserWithGroups } from "@/lib/groups";
+import { emitToUser } from "@/lib/realtime";
 
 // 두 유저가 target 그룹을 함께 공유하는지 확인
 async function sharedGroupId(userId: string, otherId: string, requested?: string | null) {
@@ -91,17 +92,22 @@ export async function POST(req: NextRequest) {
       isDirect: true,
       type: "text",
       content: content.trim(),
+      readBy: [user._id],
     });
     await msg.populate("sender", "realName username avatar");
     const populated = msg as any;
+    const dmJson = {
+      id: String(populated._id),
+      groupId: String(populated.groupId),
+      sender: { id: String(populated.sender._id), realName: populated.sender.realName, username: populated.sender.username, avatar: populated.sender.avatar },
+      content: populated.content,
+      createdAt: populated.createdAt,
+    };
+    // 수신자 개인 방으로 실시간 전달
+    emitToUser(String(other._id), "dm:new", dmJson);
     return NextResponse.json({
       ok: true,
-      message: {
-        id: String(populated._id),
-        sender: { id: String(populated.sender._id), realName: populated.sender.realName, username: populated.sender.username, avatar: populated.sender.avatar },
-        content: populated.content,
-        createdAt: populated.createdAt,
-      },
+      message: dmJson,
     });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });

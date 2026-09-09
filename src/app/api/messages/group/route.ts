@@ -3,6 +3,33 @@ import { connectDB } from "@/lib/db";
 import Message from "@/models/Message";
 import { verifyToken } from "@/lib/auth";
 import { isGroupMember, loadUserWithGroups } from "@/lib/groups";
+import { emitToGroup } from "@/lib/realtime";
+
+function toMessageJson(m: any) {
+  return {
+    id: String(m._id),
+    groupId: String(m.groupId),
+    sender: m.sender
+      ? { id: String(m.sender._id || m.sender), realName: m.sender.realName, username: m.sender.username, avatar: m.sender.avatar }
+      : null,
+    type: m.type,
+    content: m.content,
+    schedule: m.schedule || null,
+    vote: m.vote
+      ? {
+          question: m.vote.question,
+          options: m.vote.options.map((o: any) => ({ text: o.text, votes: o.votes.map((v: any) => String(v)), count: o.votes.length })),
+          allowMultiple: m.vote.allowMultiple,
+          expiresAt: m.vote.expiresAt,
+          closed: m.vote.closed,
+        }
+      : null,
+    mediaUrl: m.mediaUrl || null,
+    mediaType: m.mediaType || null,
+    readBy: ((m.readBy || []) as any[]).map((v: any) => String(v)),
+    createdAt: m.createdAt,
+  };
+}
 
 async function resolveGroupId(userId: string, requested?: string | null) {
   const user = await loadUserWithGroups(userId);
@@ -37,26 +64,7 @@ export async function GET(req: NextRequest) {
     messages.reverse();
 
     return NextResponse.json({
-      messages: messages.map((m: any) => ({
-        id: String(m._id),
-        groupId: String(m.groupId),
-        sender: m.sender ? { id: String(m.sender._id), realName: m.sender.realName, username: m.sender.username, avatar: m.sender.avatar } : null,
-        type: m.type,
-        content: m.content,
-        schedule: m.schedule || null,
-        vote: m.vote
-          ? {
-              question: m.vote.question,
-              options: m.vote.options.map((o: any) => ({ text: o.text, votes: o.votes.map((v: any) => String(v)), count: o.votes.length })),
-              allowMultiple: m.vote.allowMultiple,
-              expiresAt: m.vote.expiresAt,
-              closed: m.vote.closed,
-            }
-          : null,
-        mediaUrl: m.mediaUrl || null,
-        mediaType: m.mediaType || null,
-        createdAt: m.createdAt,
-      })),
+      messages: messages.map(toMessageJson),
     });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
@@ -98,6 +106,7 @@ export async function POST(req: NextRequest) {
       sender: user._id,
       type: type || "text",
       content: content || "",
+      readBy: [user._id], // 작성자는 읽음 처리
     };
     if (type === "schedule") msgData.schedule = schedule;
     if (type === "vote") {
@@ -130,29 +139,13 @@ export async function POST(req: NextRequest) {
     }
 
     const populated = msg as any;
+    const messageJson = toMessageJson(populated);
+    // 같은 그룹 방에 실시간 브로드캐스트 (소켓 연결된 멤버는 폴링 없이 즉시 수신)
+    emitToGroup(String(targetGroupId), "message:new", messageJson);
 
     return NextResponse.json({
       ok: true,
-      message: {
-        id: String(populated._id),
-        groupId: String(populated.groupId),
-        sender: { id: String(populated.sender._id), realName: populated.sender.realName, username: populated.sender.username, avatar: populated.sender.avatar },
-        type: populated.type,
-        content: populated.content,
-        schedule: populated.schedule || null,
-        vote: populated.vote
-          ? {
-              question: populated.vote.question,
-              options: populated.vote.options.map((o: any) => ({ text: o.text, votes: o.votes.map((v: any) => String(v)), count: o.votes.length })),
-              allowMultiple: populated.vote.allowMultiple,
-              expiresAt: populated.vote.expiresAt,
-              closed: populated.vote.closed,
-            }
-          : null,
-        mediaUrl: populated.mediaUrl || null,
-        mediaType: populated.mediaType || null,
-        createdAt: populated.createdAt,
-      },
+      message: messageJson,
     });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
