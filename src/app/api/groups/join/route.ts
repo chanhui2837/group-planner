@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/db";
 import Group from "@/models/Group";
-import User from "@/models/User";
 import { verifyToken } from "@/lib/auth";
+import { MAX_GROUPS_PER_USER, getGroupIds, loadUserWithGroups } from "@/lib/groups";
 
 export async function POST(req: NextRequest) {
   try {
@@ -13,9 +13,11 @@ export async function POST(req: NextRequest) {
     if (!payload) return NextResponse.json({ error: "인증 실패" }, { status: 401 });
 
     const { inviteCode, groupId } = await req.json();
-    const user = await User.findById(payload.userId);
+    const user = await loadUserWithGroups(payload.userId);
     if (!user) return NextResponse.json({ error: "유저 없음" }, { status: 404 });
-    if (user.groupId) return NextResponse.json({ error: "이미 그룹에 속해있습니다." }, { status: 400 });
+    const myGroups = getGroupIds(user);
+    if (myGroups.length >= MAX_GROUPS_PER_USER)
+      return NextResponse.json({ error: `그룹은 최대 ${MAX_GROUPS_PER_USER}개까지 들어갈 수 있어요. 먼저 다른 그룹에서 나가주세요.` }, { status: 400 });
 
     let group = null;
     if (groupId) group = await Group.findById(groupId);
@@ -33,7 +35,10 @@ export async function POST(req: NextRequest) {
 
     group.members.push(user._id as any);
     await group.save();
-    user.groupId = group._id as any;
+    if (!myGroups.some((id) => id === String(group._id))) {
+      user.groupIds = [...myGroups.map((id) => id as any), group._id as any];
+    }
+    user.groupId = group._id as any; // 입장한 그룹으로 자동 전환
     await user.save();
 
     // system message

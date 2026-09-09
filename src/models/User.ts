@@ -6,7 +6,8 @@ export interface IUser extends Document {
   email: string;
   password: string;
   avatar: string; // base64 or URL
-  groupId?: mongoose.Types.ObjectId | null;
+  groupId?: mongoose.Types.ObjectId | null; // 현재 활성 그룹 (하위호환)
+  groupIds?: mongoose.Types.ObjectId[]; // 가입한 모든 그룹 (최대 3개)
   location?: {
     lat: number;
     lng: number;
@@ -26,6 +27,7 @@ const UserSchema = new Schema<IUser>(
     password: { type: String, required: true },
     avatar: { type: String, default: "" },
     groupId: { type: Schema.Types.ObjectId, ref: "Group", default: null },
+    groupIds: { type: [{ type: Schema.Types.ObjectId, ref: "Group" }], default: [] },
     location: {
       lat: { type: Number },
       lng: { type: Number },

@@ -3,6 +3,7 @@ import { connectDB } from "@/lib/db";
 import Group from "@/models/Group";
 import User from "@/models/User";
 import { verifyToken } from "@/lib/auth";
+import { getGroupIds, loadUserWithGroups } from "@/lib/groups";
 
 export async function POST(req: NextRequest) {
   try {
@@ -12,12 +13,23 @@ export async function POST(req: NextRequest) {
     const payload = await verifyToken(token);
     if (!payload) return NextResponse.json({ error: "인증 실패" }, { status: 401 });
 
-    const user = await User.findById(payload.userId);
-    if (!user || !user.groupId) return NextResponse.json({ error: "속한 그룹이 없습니다." }, { status: 400 });
+    const body = await req.json().catch(() => ({}));
+    const targetId: string | undefined = body?.groupId;
 
-    const group = await Group.findById(user.groupId);
+    const user = await loadUserWithGroups(payload.userId);
+    if (!user) return NextResponse.json({ error: "유저 없음" }, { status: 404 });
+    const myGroups = getGroupIds(user);
+    if (myGroups.length === 0) return NextResponse.json({ error: "속한 그룹이 없습니다." }, { status: 400 });
+
+    const leavingId = targetId || (user.groupId ? String(user.groupId) : myGroups[0]);
+    if (!myGroups.some((id) => id === leavingId))
+      return NextResponse.json({ error: "속하지 않은 그룹입니다." }, { status: 400 });
+
+    const group = await Group.findById(leavingId);
     if (!group) {
-      user.groupId = null;
+      const remaining = myGroups.filter((id) => id !== leavingId);
+      user.groupIds = remaining as any;
+      user.groupId = (remaining.length > 0 ? remaining[0] : null) as any;
       await user.save();
       return NextResponse.json({ ok: true });
     }
@@ -55,7 +67,9 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    user.groupId = null;
+    const remaining = myGroups.filter((id) => id !== String(group._id));
+    user.groupIds = remaining as any;
+    user.groupId = (remaining.length > 0 ? remaining[0] : null) as any;
     await user.save();
 
     return NextResponse.json({ ok: true });

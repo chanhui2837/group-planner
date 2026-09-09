@@ -2,7 +2,20 @@ import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/db";
 import Message from "@/models/Message";
 import User from "@/models/User";
+import Group from "@/models/Group";
 import { verifyToken } from "@/lib/auth";
+import { loadUserWithGroups } from "@/lib/groups";
+
+// 두 유저가 target 그룹을 함께 공유하는지 확인
+async function sharedGroupId(userId: string, otherId: string, requested?: string | null) {
+  const user = await loadUserWithGroups(userId);
+  if (!user) return { error: "유저 없음" as const };
+  const target = requested || (user.groupId ? String(user.groupId) : null);
+  if (!target) return { error: "그룹 없음" as const };
+  const shared = await Group.countDocuments({ _id: target, members: { $all: [userId as any, otherId as any] } });
+  if (!shared) return { error: "같은 그룹 멤버끼리만 가능" as const };
+  return { user, target };
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -11,8 +24,6 @@ export async function GET(req: NextRequest) {
     if (!token) return NextResponse.json({ error: "로그인 필요" }, { status: 401 });
     const payload = await verifyToken(token);
     if (!payload) return NextResponse.json({ error: "인증 실패" }, { status: 401 });
-    const user = await User.findById(payload.userId);
-    if (!user?.groupId) return NextResponse.json({ error: "그룹 없음" }, { status: 400 });
 
     const { searchParams } = new URL(req.url);
     const withUser = searchParams.get("with");
@@ -20,11 +31,16 @@ export async function GET(req: NextRequest) {
 
     const other = await User.findById(withUser);
     if (!other) return NextResponse.json({ error: "상대 없음" }, { status: 404 });
-    if (String(other.groupId) !== String(user.groupId)) return NextResponse.json({ error: "같은 그룹 멤버만 가능" }, { status: 403 });
+    const resolved = await sharedGroupId(payload.userId, String(other._id), searchParams.get("groupId"));
+    if ("error" in resolved) {
+      const status = resolved.error === "같은 그룹 멤버끼리만 가능" ? 403 : 400;
+      return NextResponse.json({ error: resolved.error }, { status });
+    }
+    const user = resolved.user;
 
     const messages = await Message.find({
       isDirect: true,
-      groupId: user.groupId,
+      groupId: resolved.target,
       $or: [
         { sender: user._id, receiver: other._id },
         { sender: other._id, receiver: user._id },
@@ -55,18 +71,21 @@ export async function POST(req: NextRequest) {
     if (!token) return NextResponse.json({ error: "로그인 필요" }, { status: 401 });
     const payload = await verifyToken(token);
     if (!payload) return NextResponse.json({ error: "인증 실패" }, { status: 401 });
-    const user = await User.findById(payload.userId);
-    if (!user?.groupId) return NextResponse.json({ error: "그룹 없음" }, { status: 400 });
 
-    const { receiverId, content } = await req.json();
+    const { receiverId, content, groupId } = await req.json();
     if (!receiverId || !content?.trim()) return NextResponse.json({ error: "receiverId와 content 필요" }, { status: 400 });
 
     const other = await User.findById(receiverId);
     if (!other) return NextResponse.json({ error: "상대 없음" }, { status: 404 });
-    if (String(other.groupId) !== String(user.groupId)) return NextResponse.json({ error: "같은 그룹만 가능" }, { status: 403 });
+    const resolved = await sharedGroupId(payload.userId, String(other._id), groupId);
+    if ("error" in resolved) {
+      const status = resolved.error === "같은 그룹 멤버끼리만 가능" ? 403 : 400;
+      return NextResponse.json({ error: resolved.error }, { status });
+    }
+    const user = resolved.user;
 
     const msg = await Message.create({
-      groupId: user.groupId,
+      groupId: resolved.target,
       sender: user._id,
       receiver: other._id,
       isDirect: true,

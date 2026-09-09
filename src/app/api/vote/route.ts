@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/db";
 import Message from "@/models/Message";
 import { verifyToken } from "@/lib/auth";
+import { isGroupMember } from "@/lib/groups";
 
 export async function POST(req: NextRequest) {
   try {
@@ -16,6 +17,9 @@ export async function POST(req: NextRequest) {
 
     const msg = await Message.findById(messageId);
     if (!msg || !msg.vote) return NextResponse.json({ error: "투표 없음" }, { status: 404 });
+    // 투표가 속한 그룹의 멤버만 투표 가능 (멀티그룹 대응)
+    const member = await isGroupMember(payload.userId, String(msg.groupId));
+    if (!member) return NextResponse.json({ error: "속하지 않은 그룹의 투표입니다." }, { status: 403 });
     if (msg.vote.closed) return NextResponse.json({ error: "종료된 투표" }, { status: 400 });
     if (msg.vote.expiresAt && new Date(msg.vote.expiresAt) < new Date()) {
       msg.vote.closed = true;

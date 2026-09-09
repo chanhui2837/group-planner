@@ -1,8 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/db";
 import Message from "@/models/Message";
-import User from "@/models/User";
 import { verifyToken } from "@/lib/auth";
+import { isGroupMember, loadUserWithGroups } from "@/lib/groups";
+
+async function resolveGroupId(userId: string, requested?: string | null) {
+  const user = await loadUserWithGroups(userId);
+  if (!user) return { error: "유저 없음" as const };
+  const target = requested || (user.groupId ? String(user.groupId) : null);
+  if (!target) return { error: "그룹 없음" as const };
+  const ok = await isGroupMember(userId, target);
+  if (!ok) return { error: "속하지 않은 그룹입니다." as const };
+  return { user, target };
+}
 
 export async function GET(req: NextRequest) {
   try {
@@ -12,14 +22,14 @@ export async function GET(req: NextRequest) {
     const payload = await verifyToken(token);
     if (!payload) return NextResponse.json({ error: "인증 실패" }, { status: 401 });
 
-    const user = await User.findById(payload.userId);
-    if (!user?.groupId) return NextResponse.json({ error: "그룹 없음" }, { status: 400 });
-
     const { searchParams } = new URL(req.url);
+    const resolved = await resolveGroupId(payload.userId, searchParams.get("groupId"));
+    if ("error" in resolved) return NextResponse.json({ error: resolved.error }, { status: 400 });
+
     const limit = Math.min(parseInt(searchParams.get("limit") || "100"), 200);
     const before = searchParams.get("before");
 
-    const query: any = { groupId: user.groupId, isDirect: { $ne: true } };
+    const query: any = { groupId: resolved.target, isDirect: { $ne: true } };
     if (before) query.createdAt = { $lt: new Date(before) };
 
     const messages = await Message.find(query).sort({ createdAt: -1 }).limit(limit).populate("sender", "realName username avatar").lean();
@@ -61,10 +71,14 @@ export async function POST(req: NextRequest) {
     const payload = await verifyToken(token);
     if (!payload) return NextResponse.json({ error: "인증 실패" }, { status: 401 });
 
-    const user = await User.findById(payload.userId);
-    if (!user?.groupId) return NextResponse.json({ error: "그룹에 먼저 가입하세요." }, { status: 400 });
+    const body = await req.json();
+    const { content, type, schedule, vote, mediaUrl, mediaType } = body;
+    const groupIdParam: string | undefined = body.groupId;
 
-    const { content, type, schedule, vote, mediaUrl, mediaType } = await req.json();
+    const resolved = await resolveGroupId(payload.userId, groupIdParam);
+    if ("error" in resolved) return NextResponse.json({ error: resolved.error }, { status: 400 });
+    const user = resolved.user;
+    const targetGroupId = resolved.target;
 
     // validation per type
     if (type === "schedule") {
@@ -80,7 +94,7 @@ export async function POST(req: NextRequest) {
     }
 
     const msgData: any = {
-      groupId: user.groupId,
+      groupId: targetGroupId,
       sender: user._id,
       type: type || "text",
       content: content || "",
@@ -102,7 +116,7 @@ export async function POST(req: NextRequest) {
 
     const msg = await Message.create(msgData);
     await msg.populate("sender", "realName username avatar");
-    console.log(`✅ [DB] 메시지 실시간 저장: type=${msgData.type} group=${String(user.groupId)} sender=${payload.username} id=${String(msg._id)}`);
+    console.log(`✅ [DB] 메시지 실시간 저장: type=${msgData.type} group=${String(targetGroupId)} sender=${payload.username} id=${String(msg._id)}`);
     // 사이트 꺼져도 가야 하는 푸시 — 일정은 큼직한 알람, 일반 메시지도 알림
     try {
       const { sendPushToGroup } = await import("@/lib/push");
@@ -110,7 +124,7 @@ export async function POST(req: NextRequest) {
       const body = msgData.type === "schedule" ? `${schedule?.date} ${schedule?.time || ""} - ${user.realName}님이 일정을 올렸어요!` : msgData.type === "vote" ? `${user.realName}님이 투표를 올렸어요!` : (content || "").slice(0, 80);
       const pushType = msgData.type === "schedule" ? "schedule" : msgData.type === "vote" ? "vote" : "message";
       // fire-and-forget (기다리지 않고 백그라운드)
-      sendPushToGroup(String(user.groupId), String(user._id), { title, body, url: "/", type: pushType as any });
+      sendPushToGroup(String(targetGroupId), String(user._id), { title, body, url: "/", type: pushType as any });
     } catch (e: any) {
       console.warn("[PUSH] 호출 실패:", e.message);
     }

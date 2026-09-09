@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { useStore } from "@/lib/store";
+import { useStore, MAX_GROUPS } from "@/lib/store";
 import Logo from "@/components/Logo";
 import AlarmOverlay, { AlarmData } from "@/components/AlarmOverlay";
 import PWAInstall from "@/components/PWAInstall";
@@ -12,10 +12,29 @@ let L: any = null;
 type Tab = "chat" | "dm" | "schedule" | "map" | "weather" | "members";
 
 export default function Dashboard() {
-  const { user, group, loading, refresh } = useStore();
+  const { user, group, groups, loading, refresh, switchGroup } = useStore();
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("chat");
   const [alarm, setAlarm] = useState<AlarmData | null>(null);
+  const [switching, setSwitching] = useState(false);
+  const [showGroupManager, setShowGroupManager] = useState(false);
+
+  const doSwitchGroup = async (id: string) => {
+    if (!group || group.id === id || switching) return;
+    setSwitching(true);
+    try {
+      await switchGroup(id);
+      setMessages([]);
+      setDmMessages([]);
+      setMembersLoc([]);
+      setDmTarget(null);
+      lastMsgCount.current = 0;
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setSwitching(false);
+    }
+  };
 
   // group creation/join
   const [groupName, setGroupName] = useState("");
@@ -161,16 +180,16 @@ export default function Dashboard() {
     }
   };
 
-  // fetch groups search
+  // fetch groups search (최대 개수 미만일 때만)
   useEffect(() => {
-    if (!user || group) return;
+    if (!user || groups.length >= MAX_GROUPS) return;
     const t = setTimeout(async () => {
       const res = await fetch(`/api/groups?q=${encodeURIComponent(searchQ)}`);
       const data = await res.json();
       setSearchGroups(data.groups || []);
     }, 300);
     return () => clearTimeout(t);
-  }, [searchQ, user, group]);
+  }, [searchQ, user, groups.length]);
 
   // fetch weather by geo — 고정 도시 없음, 실제 기기 위치만 사용
   const [weatherError, setWeatherError] = useState<string | null>(null);
@@ -224,12 +243,13 @@ export default function Dashboard() {
       .catch(() => setWeatherAddr(null));
   }, [coords]);
 
-  // polling group messages
+  // polling group messages (활성 그룹 기준)
   useEffect(() => {
     if (!user || !group) return;
+    const gid = group.id;
     let interval: any;
     const fetchMsgs = async () => {
-      const res = await fetch("/api/messages/group");
+      const res = await fetch(`/api/messages/group?groupId=${gid}`);
       if (!res.ok) return;
       const data = await res.json();
       const msgs = data.messages || [];
@@ -253,7 +273,7 @@ export default function Dashboard() {
     fetchMsgs();
     interval = setInterval(fetchMsgs, 2500);
     return () => clearInterval(interval);
-  }, [user, group]);
+  }, [user, group?.id]);
 
   // auto scroll — 사용자가 위로 올렸을 땐 자동 이동 안 함
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -271,31 +291,49 @@ export default function Dashboard() {
     if (isNearBottom) dmEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [dmMessages]);
 
-  // poll locations
+  // poll locations (활성 그룹 기준)
   useEffect(() => {
     if (!group || tab !== "map") return;
+    const gid = group.id;
     const fetchLoc = async () => {
-      const res = await fetch("/api/location");
+      const res = await fetch(`/api/location?groupId=${gid}`);
       const data = await res.json();
       setMembersLoc(data.members || []);
     };
     fetchLoc();
     const id = setInterval(fetchLoc, 4000);
     return () => clearInterval(id);
-  }, [group, tab]);
+  }, [group?.id, tab]);
 
-  // DM polling
+  // DM polling (활성 그룹 기준)
   useEffect(() => {
     if (!dmTarget || !group) return;
+    const gid = group.id;
     const fetchDm = async () => {
-      const res = await fetch(`/api/messages/direct?with=${dmTarget}`);
+      const res = await fetch(`/api/messages/direct?with=${dmTarget}&groupId=${gid}`);
       const data = await res.json();
       if (data.messages) setDmMessages(data.messages);
     };
     fetchDm();
     const id = setInterval(fetchDm, 2000);
     return () => clearInterval(id);
-  }, [dmTarget, group]);
+  }, [dmTarget, group?.id]);
+
+  // 가입 그룹은 있는데 활성 그룹이 비어있으면 첫 그룹으로 자동 전환
+  useEffect(() => {
+    if (!loading && groups.length > 0 && !group && !switching) {
+      (async () => {
+        setSwitching(true);
+        try {
+          await switchGroup(groups[0].id);
+        } catch {}
+        finally {
+          setSwitching(false);
+        }
+      })();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, groups.length, group?.id]);
 
   // leaflet map — 최초 1회만 중심 설정, 이후엔 마커만 갱신 (옆으로 넘겨도 다시 내 위치로 점프 안 함)
   const recenterMap = () => {
@@ -479,6 +517,7 @@ export default function Dashboard() {
 
   const handleCreateGroup = async () => {
     if (!groupName.trim()) return alert("그룹 이름을 입력하세요");
+    if (groups.length >= MAX_GROUPS) return alert(`그룹은 최대 ${MAX_GROUPS}개까지만 들어갈 수 있어요. 먼저 다른 그룹에서 나가주세요.`);
     setCreating(true);
     const res = await fetch("/api/groups", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: groupName, description: groupDesc }) });
     const data = await res.json();
@@ -491,6 +530,7 @@ export default function Dashboard() {
   const handleJoin = async (codeOrId?: string, isId?: boolean) => {
     const payload = isId ? { groupId: codeOrId } : { inviteCode: codeOrId || inviteCodeInput };
     if (!payload.inviteCode && !payload.groupId) return alert("초대코드를 입력하세요");
+    if (groups.length >= MAX_GROUPS) return alert(`그룹은 최대 ${MAX_GROUPS}개까지만 들어갈 수 있어요. 먼저 다른 그룹에서 나가주세요.`);
     setJoining(true);
     const res = await fetch("/api/groups/join", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     const data = await res.json();
@@ -501,11 +541,18 @@ export default function Dashboard() {
   };
 
   const handleLeave = async () => {
-    if (!confirm("정말 그룹에서 나가시겠어요?")) return;
-    const res = await fetch("/api/groups/leave", { method: "POST" });
+    if (!group) return;
+    if (!confirm(`"${group.name}" 그룹에서 나가시겠어요?${groups.length > 1 ? " (다른 그룹 활동은 계속돼요)" : ""}`)) return;
+    const res = await fetch("/api/groups/leave", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupId: group.id }) });
     const data = await res.json();
     if (!res.ok) return alert(data.error || "탈퇴 실패");
+    setShowGroupManager(false);
     await refresh();
+    setMessages([]);
+    setDmMessages([]);
+    setMembersLoc([]);
+    setDmTarget(null);
+    lastMsgCount.current = 0;
   };
 
   const handleDelete = async () => {
@@ -514,14 +561,20 @@ export default function Dashboard() {
     const res = await fetch(`/api/groups?id=${group.id}`, { method: "DELETE" });
     const data = await res.json();
     if (!res.ok) return alert(data.error || "삭제 실패");
+    setShowGroupManager(false);
     await refresh();
+    setMessages([]);
+    setDmMessages([]);
+    setMembersLoc([]);
+    setDmTarget(null);
+    lastMsgCount.current = 0;
   };
 
   const sendMessage = async () => {
     if (!input.trim() && !chatMedia) return;
     if (chatMedia) return sendMedia();
     setSending(true);
-    const res = await fetch("/api/messages/group", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: input, type: "text" }) });
+    const res = await fetch("/api/messages/group", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: input, type: "text", groupId: group?.id }) });
     setSending(false);
     if (!res.ok) {
       const d = await res.json();
@@ -576,7 +629,7 @@ export default function Dashboard() {
     const type = chatMedia.type.startsWith("image/") ? "image" : "video";
     setSending(true);
     try {
-      const res = await fetch("/api/messages/group", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type, mediaUrl: chatMedia.url, mediaType: chatMedia.type, content: input.trim() }) });
+      const res = await fetch("/api/messages/group", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type, mediaUrl: chatMedia.url, mediaType: chatMedia.type, content: input.trim(), groupId: group?.id }) });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "전송 실패");
       setMessages((prev) => [...prev, data.message]);
@@ -595,7 +648,7 @@ export default function Dashboard() {
     const res = await fetch("/api/messages/group", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "schedule", content: scheduleForm.title, schedule: scheduleForm }),
+      body: JSON.stringify({ type: "schedule", content: scheduleForm.title, schedule: scheduleForm, groupId: group?.id }),
     });
     const data = await res.json();
     if (!res.ok) return alert(data.error || "일정 등록 실패");
@@ -616,6 +669,7 @@ export default function Dashboard() {
       body: JSON.stringify({
         type: "vote",
         content: voteForm.question,
+        groupId: group?.id,
         vote: { question: voteForm.question, options: opts, allowMultiple: voteForm.allowMultiple, expiresAt: voteForm.expiresAt || null },
       }),
     });
@@ -637,7 +691,7 @@ export default function Dashboard() {
 
   const sendDM = async () => {
     if (!dmTarget || !dmInput.trim()) return;
-    const res = await fetch("/api/messages/direct", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ receiverId: dmTarget, content: dmInput }) });
+    const res = await fetch("/api/messages/direct", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ receiverId: dmTarget, content: dmInput, groupId: group?.id }) });
     const data = await res.json();
     if (!res.ok) return alert(data.error || "전송 실패");
     setDmMessages((prev) => [...prev, data.message]);
@@ -663,7 +717,7 @@ export default function Dashboard() {
       setGeoError(null);
       setCoords({ lat: latitude, lng: longitude });
       await refresh();
-      const r2 = await fetch("/api/location");
+      const r2 = await fetch(`/api/location?groupId=${group?.id}`);
       const d2 = await r2.json();
       setMembersLoc(d2.members || []);
       if (showAlarm) triggerAlarm({ title: "📍 위치 공유 완료", body: `위치가 저장됐어요! (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`, type: "schedule" });
@@ -700,7 +754,7 @@ export default function Dashboard() {
             setCoords({ lat: la, lng: lo });
             console.log(`📍 [실시간] 위치 자동 갱신: ${la.toFixed(5)},${lo.toFixed(5)}`);
             if (tab === "map") {
-              const r2 = await fetch("/api/location");
+              const r2 = await fetch(`/api/location?groupId=${group?.id}`);
               const d2 = await r2.json();
               setMembersLoc(d2.members || []);
             }
@@ -871,8 +925,8 @@ export default function Dashboard() {
   }
   if (!user) return null;
 
-  // --- NO GROUP VIEW ---
-  if (!group) {
+  // --- NO GROUP VIEW (가입 그룹 0개일 때만) ---
+  if (groups.length === 0) {
     return (
       <div className="min-h-screen bg-[#FFF8F0] flex flex-col">
         <header className="sticky top-0 z-30 bg-white/80 backdrop-blur-xl border-b border-[#FFE0CC] px-4 sm:px-6 py-3 flex items-center justify-between">
@@ -898,7 +952,7 @@ export default function Dashboard() {
           <div className="bg-white rounded-[28px] shadow-[0_12px_32px_rgba(255,107,107,0.12)] border border-[#FFE0CC] p-6">
             <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#FF6B6B] to-[#FF8E53] flex items-center justify-center text-xl text-white">🏡</div>
             <h2 className="mt-4 text-[22px] font-black">새 그룹 만들기</h2>
-            <p className="text-sm text-[#636E72] mt-1">가족, 친구, 동아리 — 최대 10명까지 함께해요.</p>
+            <p className="text-sm text-[#636E72] mt-1">가족, 친구, 동아리 — 그룹당 최대 10명, 한 사람당 최대 {MAX_GROUPS}개 그룹까지 함께해요.</p>
 
             <div className="mt-6 space-y-4">
               <div>
@@ -923,7 +977,7 @@ export default function Dashboard() {
             <p className="text-sm text-[#636E72] mt-1">초대코드 6자리 또는 그룹 이름으로 직접 입력해 입장하세요.</p>
 
             <div className="mt-6 flex gap-2">
-              <input value={inviteCodeInput} onChange={(e) => setInviteCodeInput(e.target.value.toUpperCase())} placeholder="초대코드 6자리 (예: A3K9PX)" className="flex-1 px-4 py-3 rounded-2xl bg-[#FFF8F0] border border-[#FFE0CC] focus:outline-none focus:border-[#4ECDC4] text-sm font-mono tracking-widest uppercase" maxLength={6} />
+              <input value={inviteCodeInput} onChange={(e) => setInviteCodeInput(e.target.value.toUpperCase())} placeholder="초대코드 6자리 (예: A3K9PX)" className="flex-1 px-4 py-3 rounded-2xl bg-[#FFF8F0] border border-[#FFE0CC] focus:outline-none focus:border-[#4ECDC4] text-sm font-mono tracking-widest uppercase" maxLength={30} />
               <button onClick={() => handleJoin()} disabled={joining} className="px-6 py-3 rounded-2xl bg-[#2D3436] text-white font-black text-sm disabled:opacity-60">
                 입장
               </button>
@@ -959,12 +1013,20 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="p-6 text-center text-xs text-[#B2BEC3]">초대코드는 그룹원에게 물어보거나, 그룹장이 알려줄 수 있어요. 그룹은 최대 10명 제한이에요.</div>
+        <div className="p-6 text-center text-xs text-[#B2BEC3]">초대코드는 그룹원에게 물어보거나, 그룹장이 알려줄 수 있어요. 그룹당 최대 10명 · 한 사람당 최대 {MAX_GROUPS}개 그룹이에요.</div>
       </div>
     );
   }
 
   // --- MAIN DASHBOARD WITH GROUP ---
+  // 가입 그룹은 있는데 활성 그룹 로딩 중이면 대기 화면 (아래 코드는 group non-null 보장)
+  if (!group) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#FFF8F0]">
+        <div className="text-[#FF8A65] font-black animate-pulse">그룹 불러오는 중...</div>
+      </div>
+    );
+  }
   return (
     <div className="min-h-screen bg-[#FFF8F0] flex flex-col">
       <AlarmOverlay alarm={alarm} onClose={() => setAlarm(null)} />
@@ -987,6 +1049,27 @@ export default function Dashboard() {
           </div>
           <div className="text-xs text-[#636E72] truncate hidden sm:block">{group.description || "함께하는 가족 그룹"}</div>
         </div>
+
+        {/* 그룹 전환 (2개 이상 가입 시) — 웹/앱 공통 */}
+        {groups.length > 1 && (
+          <select
+            value={group.id}
+            onChange={(e) => doSwitchGroup(e.target.value)}
+            disabled={switching}
+            className="max-w-[110px] sm:max-w-[160px] px-2 py-1.5 rounded-xl bg-[#FFF0E6] border border-[#FFE0CC] text-xs font-black text-[#2D3436] shrink-0 focus:outline-none focus:border-[#FF6B6B] disabled:opacity-60"
+            title="활동할 그룹 전환"
+          >
+            {groups.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name} ({g.memberCount}/10)
+              </option>
+            ))}
+          </select>
+        )}
+        <button onClick={() => setShowGroupManager(true)} className="px-2 sm:px-3 py-1.5 sm:py-2 rounded-xl bg-[#E0F7F4] border border-[#4ECDC4]/40 text-xs font-black text-[#00897B] shrink-0" title={`내 그룹 관리 (${groups.length}/${MAX_GROUPS})`}>
+          <span className="hidden sm:inline">👥 내 그룹 {groups.length}/{MAX_GROUPS}</span>
+          <span className="sm:hidden">👥 {groups.length}/{MAX_GROUPS}</span>
+        </button>
 
         <div className="flex items-center gap-1 sm:gap-2">
           <div className="hidden sm:block"><PWAInstall /></div>
@@ -1066,6 +1149,40 @@ export default function Dashboard() {
               </button>
             </div>
             <div className="mt-3 text-xs text-white/80">가족을 초대해보세요! 최대 10명까지.</div>
+          </div>
+
+          {/* 내 그룹 목록 (최대 3개) — 다른 그룹으로 전환하며 활동 */}
+          <div className="bg-white rounded-[24px] border border-[#FFE0CC] shadow-sm p-4">
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-black text-[#636E72]">내 그룹 ({groups.length}/{MAX_GROUPS})</div>
+              {groups.length < MAX_GROUPS && (
+                <button onClick={() => setShowGroupManager(true)} className="text-[11px] font-black text-[#FF6B6B] bg-[#FFF0E6] px-2.5 py-1 rounded-lg">
+                  ＋ 추가
+                </button>
+              )}
+            </div>
+            <div className="mt-2 space-y-1.5">
+              {groups.map((g) => (
+                <button
+                  key={g.id}
+                  onClick={() => doSwitchGroup(g.id)}
+                  disabled={switching}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-left transition disabled:opacity-60 ${g.id === group.id ? "bg-[#FF6B6B] text-white shadow" : "hover:bg-[#FFF8F0] border border-[#FFE0CC]"}`}
+                >
+                  <span className="w-7 h-7 rounded-lg flex items-center justify-center text-white text-xs font-black shrink-0" style={{ background: g.color }}>
+                    {g.name.slice(0, 1)}
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className={`block text-xs font-black truncate ${g.id === group.id ? "text-white" : "text-[#2D3436]"}`}>{g.name}</span>
+                    <span className={`block text-[10px] ${g.id === group.id ? "text-white/80" : "text-[#B2BEC3]"}`}>{g.memberCount}/10명{g.id === group.id ? " · 활동 중" : ""}</span>
+                  </span>
+                  {g.id === group.id && <span className="w-2 h-2 bg-white rounded-full animate-pulse shrink-0" />}
+                </button>
+              ))}
+            </div>
+            <button onClick={() => setShowGroupManager(true)} className="mt-3 w-full py-2 rounded-xl bg-[#FFF8F0] border border-[#FFE0CC] text-xs font-bold text-[#636E72]">
+              그룹 관리 · 만들기 · 참여하기
+            </button>
           </div>
 
           <div className="bg-white rounded-[24px] border border-[#FFE0CC] p-4">
@@ -1538,6 +1655,89 @@ export default function Dashboard() {
           </button>
         ))}
       </nav>
+
+      {/* group manager modal — 내 그룹 목록/전환/만들기/참여 (웹·앱 공통) */}
+      {showGroupManager && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowGroupManager(false)} />
+          <div className="relative bg-white rounded-[24px] w-full max-w-[480px] p-6 shadow-xl max-h-[90vh] overflow-y-auto">
+            <h3 className="text-lg font-black flex items-center gap-2">👥 내 그룹 ({groups.length}/{MAX_GROUPS})</h3>
+            <p className="text-xs text-[#636E72] mt-1">한 번에 최대 {MAX_GROUPS}개 그룹까지 들어갈 수 있어요. 전환하면 그 그룹에서 바로 활동해요.</p>
+
+            <div className="mt-4 space-y-2">
+              {groups.map((g) => (
+                <div key={g.id} className={`flex items-center gap-3 p-3 rounded-2xl border ${g.id === group.id ? "border-[#FF6B6B] bg-[#FFF5F2]" : "border-[#FFE0CC] bg-[#FFFDF8]"}`}>
+                  <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-black text-sm shrink-0" style={{ background: g.color }}>
+                    {g.name.slice(0, 1)}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-black text-sm truncate">{g.name}{g.id === group.id && <span className="ml-1.5 text-[10px] bg-[#FF6B6B] text-white px-1.5 py-0.5 rounded-full">활동 중</span>}</div>
+                    <div className="text-xs text-[#636E72] truncate">#{g.inviteCode} · {g.memberCount}/10명</div>
+                  </div>
+                  {g.id !== group.id && (
+                    <button onClick={() => doSwitchGroup(g.id)} disabled={switching} className="px-4 py-2 rounded-xl bg-[#2D3436] text-white text-xs font-black shrink-0 disabled:opacity-60">
+                      전환
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            {groups.length < MAX_GROUPS ? (
+              <div className="mt-5 pt-4 border-t border-[#FFE0CC] space-y-4">
+                <div>
+                  <div className="text-sm font-black">✨ 새 그룹 만들기</div>
+                  <input value={groupName} onChange={(e) => setGroupName(e.target.value)} placeholder="그룹 이름 (2글자 이상)" className="mt-2 w-full px-4 py-2.5 rounded-xl bg-[#FFF8F0] border border-[#FFE0CC] text-sm focus:outline-none focus:border-[#FF6B6B]" />
+                  <input value={groupDesc} onChange={(e) => setGroupDesc(e.target.value)} placeholder="설명 (선택)" className="mt-2 w-full px-4 py-2.5 rounded-xl bg-[#FFF8F0] border border-[#FFE0CC] text-sm focus:outline-none focus:border-[#FF6B6B]" />
+                  <button onClick={handleCreateGroup} disabled={creating} className="mt-2 w-full py-2.5 rounded-xl bg-gradient-to-r from-[#FF6B6B] to-[#FF8E53] text-white font-black text-sm disabled:opacity-60">
+                    {creating ? "생성 중..." : "그룹 만들기"}
+                  </button>
+                </div>
+                <div>
+                  <div className="text-sm font-black">🔑 다른 그룹에 참여하기</div>
+                  <div className="mt-2 flex gap-2">
+                    <input value={inviteCodeInput} onChange={(e) => setInviteCodeInput(e.target.value.toUpperCase())} placeholder="초대코드 6자리 or 그룹 이름" className="flex-1 px-4 py-2.5 rounded-xl bg-[#FFF8F0] border border-[#FFE0CC] text-sm font-mono uppercase focus:outline-none focus:border-[#4ECDC4]" maxLength={30} />
+                    <button onClick={async () => { await handleJoin(); setInviteCodeInput(""); }} disabled={joining} className="px-5 py-2.5 rounded-xl bg-[#2D3436] text-white font-black text-sm disabled:opacity-60">
+                      입장
+                    </button>
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <input value={searchQ} onChange={(e) => setSearchQ(e.target.value)} placeholder="그룹 검색..." className="flex-1 px-4 py-2 rounded-xl bg-[#FFF8F0] border border-[#FFE0CC] text-sm focus:outline-none focus:border-[#FF6B6B]" />
+                    <span className="text-xs text-[#B2BEC3] font-bold">{searchGroups.length}개</span>
+                  </div>
+                  <div className="mt-2 space-y-1.5 max-h-[220px] overflow-y-auto pr-1">
+                    {searchGroups.length === 0 && <div className="text-xs text-[#B2BEC3] text-center py-4">검색 결과가 없어요.</div>}
+                    {searchGroups
+                      .filter((g) => !groups.some((mine) => mine.id === g.id))
+                      .map((g) => (
+                        <div key={g.id} className="flex items-center gap-2.5 p-2.5 rounded-xl border border-[#FFE0CC] bg-[#FFFDF8]">
+                          <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-black text-xs shrink-0" style={{ background: g.color }}>
+                            {g.name.slice(0, 1)}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="font-black text-xs truncate">{g.name}</div>
+                            <div className="text-[11px] text-[#636E72]">{g.memberCount}/10명</div>
+                          </div>
+                          <button onClick={() => handleJoin(g.id, true)} disabled={joining || g.isFull} className="px-3 py-1.5 rounded-lg bg-[#4ECDC4] text-white text-xs font-black shrink-0 disabled:opacity-40">
+                            {g.isFull ? "가득 참" : "입장"}
+                          </button>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4 text-xs text-center font-bold text-[#C0392B] bg-[#FFE3E3] rounded-xl px-3 py-2.5">
+                최대 {MAX_GROUPS}개 그룹에 속해 있어요. 더 들어가려면 먼저 그룹을 나가주세요.
+              </div>
+            )}
+
+            <button onClick={() => setShowGroupManager(false)} className="mt-5 w-full py-3 rounded-xl bg-[#F1F2F6] font-bold text-sm">
+              닫기
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* schedule modal */}
       {showScheduleModal && (

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/db";
 import User from "@/models/User";
 import { verifyToken } from "@/lib/auth";
+import { isGroupMember, loadUserWithGroups } from "@/lib/groups";
 
 export async function GET(req: NextRequest) {
   try {
@@ -11,10 +12,16 @@ export async function GET(req: NextRequest) {
     const payload = await verifyToken(token);
     if (!payload) return NextResponse.json({ error: "인증 실패" }, { status: 401 });
 
-    const user = await User.findById(payload.userId);
-    if (!user?.groupId) return NextResponse.json({ members: [] });
+    const { searchParams } = new URL(req.url);
+    const user = await loadUserWithGroups(payload.userId);
+    if (!user) return NextResponse.json({ error: "유저 없음" }, { status: 404 });
+    const target = searchParams.get("groupId") || (user.groupId ? String(user.groupId) : null);
+    if (!target) return NextResponse.json({ members: [] });
+    const ok = await isGroupMember(payload.userId, target);
+    if (!ok) return NextResponse.json({ error: "속하지 않은 그룹입니다." }, { status: 403 });
 
-    const members = await User.find({ groupId: user.groupId }).select("realName username avatar location").lean();
+    // groupIds(신규) + groupId(구형) 양쪽에 속한 멤버 조회
+    const members = await User.find({ $or: [{ groupIds: target as any }, { groupId: target as any }] }).select("realName username avatar location").lean();
     return NextResponse.json({
       members: members.map((m: any) => ({
         id: String(m._id),

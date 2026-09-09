@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { connectDB } from "@/lib/db";
-import User from "@/models/User";
-import Group from "@/models/Group";
 import { verifyToken } from "@/lib/auth";
+import { getUserGroupsWithActive, formatGroup, loadUserWithGroups } from "@/lib/groups";
 
 export async function GET(req: NextRequest) {
   try {
@@ -12,19 +11,12 @@ export async function GET(req: NextRequest) {
     const payload = await verifyToken(token);
     if (!payload) return NextResponse.json({ user: null }, { status: 200 });
 
-    const user = await User.findById(payload.userId).lean();
+    const user = await loadUserWithGroups(payload.userId);
     if (!user) return NextResponse.json({ user: null }, { status: 200 });
 
-    let group = null;
-    if (user.groupId) {
-      group = await Group.findById(user.groupId).populate("members", "realName username avatar").lean();
-    }
-
-    // ensure members populated for group
-    let groupMembers: any[] = [];
-    if (group) {
-      groupMembers = (group as any).members || [];
-    }
+    const { groups, activeId } = await getUserGroupsWithActive(user);
+    const formatted = groups.map(formatGroup);
+    const active = formatted.find((g) => g.id === activeId) || null;
 
     return NextResponse.json({
       user: {
@@ -33,26 +25,12 @@ export async function GET(req: NextRequest) {
         username: user.username,
         email: user.email,
         avatar: user.avatar,
-        groupId: user.groupId ? String(user.groupId) : null,
+        groupId: active ? active.id : null,
+        groupIds: formatted.map((g) => g.id),
         location: user.location || null,
       },
-      group: group
-        ? {
-            id: String((group as any)._id),
-            name: (group as any).name,
-            description: (group as any).description,
-            inviteCode: (group as any).inviteCode,
-            owner: String((group as any).owner),
-            members: groupMembers.map((m: any) => ({
-              id: String(m._id),
-              realName: m.realName,
-              username: m.username,
-              avatar: m.avatar,
-            })),
-            color: (group as any).color,
-            memberCount: groupMembers.length,
-          }
-        : null,
+      group: active,
+      groups: formatted,
     });
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 });
