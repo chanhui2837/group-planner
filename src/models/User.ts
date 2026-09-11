@@ -14,6 +14,7 @@ export interface IUser extends Document {
     updatedAt: Date;
     address?: string;
   };
+  locationSharing?: boolean; // 위치공유 ON 의도 (앱 재실행 시 자동 재개용)
   pushSubscription?: any;
   createdAt: Date;
   updatedAt: Date;
@@ -35,6 +36,7 @@ const UserSchema = new Schema<IUser>(
       address: { type: String },
     },
     pushSubscription: { type: Schema.Types.Mixed, default: null },
+    locationSharing: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

@@ -10,6 +10,7 @@ export interface UserInfo {
   groupId: string | null; // 현재 활성 그룹
   groupIds: string[]; // 가입한 모든 그룹 (최대 3개)
   location?: any;
+  locationSharing?: boolean;
 }
 export interface GroupInfo {
   id: string;

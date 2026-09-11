@@ -28,6 +28,7 @@ export async function GET(req: NextRequest) {
         groupId: active ? active.id : null,
         groupIds: formatted.map((g) => g.id),
         location: user.location || null,
+        locationSharing: !!(user as any).locationSharing,
       },
       group: active,
       groups: formatted,

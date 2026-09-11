@@ -6,6 +6,7 @@ import { getSocket, disconnectSocket } from "@/lib/socket";
 import Logo from "@/components/Logo";
 import AlarmOverlay, { AlarmData } from "@/components/AlarmOverlay";
 import PWAInstall from "@/components/PWAInstall";
+import { startNativeTracking, stopNativeTracking, isNativeTracking } from "@/lib/background-location";
 
 // lazy leaflet to avoid SSR
 let L: any = null;
@@ -90,14 +91,44 @@ export default function Dashboard() {
   const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
 
   // location / map
+  // sharing = 내 위치 추적 ON 의도. localStorage + 서버(locationSharing)에 persist되어
+  // 앱/웹을 껐다 켜도 버튼 없이 자동 재개된다. (단, OS가 완전히 죽인 동안의 이동은
+  // 웹 기술상 수집 불가 → 재개 시점 최신 위치로 갱신 + 오래됨 표시로 구분)
+  const SHARING_KEY = "fp-location-sharing";
   const [membersLoc, setMembersLoc] = useState<any[]>([]);
   const [sharing, setSharing] = useState(false);
-  const watchIdRef = useRef<number | null>(null);
+  // 네이티브 포그라운드 서비스 동작 여부 (앱 꺼짐 상태에서도 GPS 전송)
+  const [nativeBg, setNativeBg] = useState(false);
+  const watchIdRef = useRef<any>(null);
+  const fallbackTimerRef = useRef<any>(null);
   const lastSentRef = useRef<{ lat: number; lng: number; t: number } | null>(null);
+  const sharingRef = useRef(false);
+  useEffect(() => {
+    sharingRef.current = sharing;
+  }, [sharing]);
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<any>(null);
   const markerLayerRef = useRef<any>(null);
   const hasCenteredRef = useRef(false);
+
+  const timeAgo = (iso?: string) => {
+    if (!iso) return "시간不明";
+    const t = new Date(iso).getTime();
+    if (isNaN(t)) return "";
+    const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    if (s < 60) return `${s}초 전`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}분 전`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h}시간 전`;
+    return `${Math.floor(h / 24)}일 전`;
+  };
+  const locAgeSec = (iso?: string) => {
+    if (!iso) return Infinity;
+    const t = new Date(iso).getTime();
+    if (isNaN(t)) return Infinity;
+    return Math.floor((Date.now() - t) / 1000);
+  };
 
   // profile
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
@@ -310,16 +341,20 @@ export default function Dashboard() {
   }, [dmMessages]);
 
   // poll locations (활성 그룹 기준)
+  // 지도 탭이 아니어도 주기적으로 가져와서, 지도에 들어오자마자 최신 위치가 보이게 한다.
+  // 지도 탭: 4초 / 다른 탭: 15초 (배터리·트래픽 절약)
   useEffect(() => {
-    if (!group || tab !== "map") return;
+    if (!group) return;
     const gid = group.id;
     const fetchLoc = async () => {
-      const res = await fetch(`/api/location?groupId=${gid}`);
-      const data = await res.json();
-      setMembersLoc(data.members || []);
+      try {
+        const res = await fetch(`/api/location?groupId=${gid}`, { cache: "no-store" });
+        const data = await res.json();
+        if (data.members) setMembersLoc(data.members || []);
+      } catch {}
     };
     fetchLoc();
-    const id = setInterval(fetchLoc, 4000);
+    const id = setInterval(fetchLoc, tab === "map" ? 4000 : 15000);
     return () => clearInterval(id);
   }, [group?.id, tab]);
 
@@ -515,13 +550,13 @@ export default function Dashboard() {
     };
 
     const handleLocationUpdate = async () => {
-      if (tabRef.current !== "map") return;
+      // 지도 탭이 아니어도 최신 목록을 유지 → 지도 진입 시 바로 최신 표시
       const active = groupRef.current;
       if (!active) return;
       try {
-        const res = await fetch(`/api/location?groupId=${active.id}`);
+        const res = await fetch(`/api/location?groupId=${active.id}`, { cache: "no-store" });
         const data = await res.json();
-        setMembersLoc(data.members || []);
+        if (data.members) setMembersLoc(data.members || []);
       } catch {}
     };
 
@@ -988,97 +1023,298 @@ export default function Dashboard() {
     setDmInput("");
   };
 
-  const shareLocation = async () => {
-    if (!("geolocation" in navigator)) return alert("위치 기능을 지원하지 않는 기기예요");
-    setSharing(true);
-    const doShare = async (latitude: number, longitude: number, showAlarm = true) => {
-      let address = "";
-      try {
-        const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`);
-        const j = await r.json();
-        address = j.display_name || "";
-      } catch {}
-      const res = await fetch("/api/location", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lat: latitude, lng: longitude, address }) });
-      setSharing(false);
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        return alert("위치 공유 실패: " + (d.error || res.statusText));
+  // ---- 위치 추적 엔진 (자동 재개 + Capacitor 우선) ----
+  const clearLocationWatch = async () => {
+    try {
+      if (watchIdRef.current !== null && watchIdRef.current !== undefined) {
+        // Capacitor watchId (string) vs navigator watchId (number) 구분
+        if (typeof watchIdRef.current === "string" && watchIdRef.current.startsWith("cap:")) {
+          try {
+            const { Geolocation } = await import("@capacitor/geolocation");
+            await Geolocation.clearWatch({ id: watchIdRef.current.slice(4) });
+          } catch {}
+        } else if (typeof navigator !== "undefined" && "geolocation" in navigator) {
+          try {
+            navigator.geolocation.clearWatch(watchIdRef.current);
+          } catch {}
+        }
       }
-      setGeoError(null);
-      setCoords({ lat: latitude, lng: longitude });
-      await refresh();
-      const r2 = await fetch(`/api/location?groupId=${group?.id}`);
-      const d2 = await r2.json();
-      setMembersLoc(d2.members || []);
-      if (showAlarm) triggerAlarm({ title: "📍 위치 공유 완료", body: `위치가 저장됐어요! (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`, type: "schedule" });
-      setTab("map");
-    };
-    if (watchIdRef.current !== null) {
-      navigator.geolocation.clearWatch(watchIdRef.current);
-      watchIdRef.current = null;
+    } catch {}
+    watchIdRef.current = null;
+    if (fallbackTimerRef.current) {
+      clearInterval(fallbackTimerRef.current);
+      fallbackTimerRef.current = null;
     }
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        await doShare(pos.coords.latitude, pos.coords.longitude);
-        // 위치 공유 성공 시 자동으로 실시간 추적 시작 (버튼 없이)
-        const watchId = navigator.geolocation.watchPosition(
-          async (wp) => {
-            const la = wp.coords.latitude, lo = wp.coords.longitude;
-            const now = Date.now();
-            const last = lastSentRef.current;
-            if (last) {
-              const dt = now - last.t;
-              const dLat = la - last.lat, dLng = lo - last.lng;
-              const dist = Math.sqrt(dLat * dLat + dLng * dLng) * 111000;
-              if (dt < 5000 && dist < 10) return;
+  };
+
+  const postCoords = async (latitude: number, longitude: number) => {
+    let address = "";
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&accept-language=ko`);
+      const j = await r.json();
+      address = j.display_name || "";
+    } catch {}
+    await fetch("/api/location", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lat: latitude, lng: longitude, address, sharing: true }) });
+    setGeoError(null);
+    setCoords({ lat: latitude, lng: longitude });
+    lastSentRef.current = { lat: latitude, lng: longitude, t: Date.now() };
+    // 목록 즉시 갱신 (탭 무관 — 지도 진입 시 최신 보장)
+    try {
+      const gid = groupRef.current?.id || (group as any)?.id;
+      if (gid) {
+        const r2 = await fetch(`/api/location?groupId=${gid}`, { cache: "no-store" });
+        const d2 = await r2.json();
+        if (d2.members) setMembersLoc(d2.members || []);
+      }
+    } catch {}
+  };
+
+  const onWatchPos = async (la: number, lo: number) => {
+    const now = Date.now();
+    const last = lastSentRef.current;
+    if (last) {
+      const dt = now - last.t;
+      const dLat = la - last.lat, dLng = lo - last.lng;
+      const dist = Math.sqrt(dLat * dLat + dLng * dLng) * 111000;
+      if (dt < 5000 && dist < 10) return; // 5초/10m 디바운스
+    }
+    try {
+      await postCoords(la, lo);
+      console.log(`📍 [실시간] 위치 자동 갱신: ${la.toFixed(5)},${lo.toFixed(5)}`);
+    } catch (e) {
+      console.warn("[geo] post fail", e);
+    }
+  };
+
+  const startTracking = async (opts?: { silent?: boolean }) => {
+    const silent = !!opts?.silent;
+    // 네이티브(Capacitor) 우선 — 백그라운드에서도 WebView JS 스로틀보다 오래 살아남음
+    const useCapacitor = async (): Promise<boolean> => {
+      try {
+        const { Geolocation } = await import("@capacitor/geolocation");
+        try {
+          const perm = await Geolocation.checkPermissions();
+          if ((perm as any).location !== "granted" && (perm as any).coarseLocation !== "granted") {
+            await Geolocation.requestPermissions();
+          }
+        } catch {}
+        const pos = await Geolocation.getCurrentPosition({ enableHighAccuracy: true, timeout: 15000 } as any);
+        await postCoords(pos.coords.latitude, pos.coords.longitude);
+        if (!silent) {
+          triggerAlarm({ title: "📍 위치 공유 시작", body: "이제 이동하면 자동으로 지도에 반영돼요. (앱을 다시 열면 버튼 없이 자동 재개)", type: "schedule" });
+        }
+        const wid = await Geolocation.watchPosition({ enableHighAccuracy: true, timeout: 20000 } as any, (p: any) => {
+          if (!p) return;
+          if (sharingRef.current === false && !localStorage.getItem(SHARING_KEY)) return;
+          onWatchPos(p.coords.latitude, p.coords.longitude);
+        });
+        // clearWatch용 마커
+        watchIdRef.current = `cap:${wid}`;
+        return true;
+      } catch (e) {
+        return false;
+      }
+    };
+
+    const useWebGeo = async (): Promise<boolean> => {
+      if (!("geolocation" in navigator)) {
+        if (!silent) alert("위치 기능을 지원하지 않는 기기예요");
+        return false;
+      }
+      return new Promise((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          async (pos) => {
+            await postCoords(pos.coords.latitude, pos.coords.longitude);
+            if (!silent) {
+              triggerAlarm({ title: "📍 위치 공유 시작", body: "이제 이동하면 자동으로 지도에 반영돼요. (앱을 다시 열면 버튼 없이 자동 재개)", type: "schedule" });
             }
-            lastSentRef.current = { lat: la, lng: lo, t: now };
-            let address = "";
-            try {
-              const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${la}&lon=${lo}`);
-              const j = await r.json();
-              address = j.display_name || "";
-            } catch {}
-            await fetch("/api/location", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lat: la, lng: lo, address }) });
-            setGeoError(null);
-            setCoords({ lat: la, lng: lo });
-            console.log(`📍 [실시간] 위치 자동 갱신: ${la.toFixed(5)},${lo.toFixed(5)}`);
-            if (tab === "map") {
-              const r2 = await fetch(`/api/location?groupId=${group?.id}`);
-              const d2 = await r2.json();
-              setMembersLoc(d2.members || []);
-            }
+            const wid = navigator.geolocation.watchPosition(
+              (wp) => {
+                onWatchPos(wp.coords.latitude, wp.coords.longitude);
+              },
+              (err) => {
+                console.warn("[geo] watch fail", err);
+              },
+              { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+            );
+            watchIdRef.current = wid as any;
+            resolve(true);
           },
           (err) => {
-            console.warn("[geo] watch fail", err);
-            if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
-            watchIdRef.current = null;
+            console.warn("[geo] share fail", err);
+            if (!silent) {
+              if (err.code === 1) {
+                alert("위치 권한이 거부됐어요. 브라우저 주소창 왼쪽 🔒 > 사이트 설정 > 위치 ‘허용’으로 바꾸고 새로고침 후 다시 시도하세요.\n\n폰: 설정 > 앱 > 브라우저 > 권한 > 위치 허용");
+              } else {
+                alert("위치 가져오기 실패: " + err.message + "\n\n팁: 핸드폰 설정 > 위치 서비스 켜기, 브라우저 위치 허용을 확인하세요.");
+              }
+            } else {
+              setGeoError("위치 권한이 없어 자동 재개를 건너뜁니다. 지도에서 ‘📍 위치 공유’를 한 번 눌러주세요.");
+            }
+            resolve(false);
           },
-          { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
         );
-        watchIdRef.current = watchId as unknown as number;
-        lastSentRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude, t: Date.now() };
-        console.log("[geo] 위치 공유 + 실시간 자동 추적 시작 (버튼 없이)");
-      },
-      (err) => {
-        setSharing(false);
-        console.warn("[geo] share fail", err);
-        if (err.code === 1) {
-          alert("위치 권한이 거부됐어요. 브라우저 주소창 왼쪽 🔒 > 사이트 설정 > 위치 ‘허용’으로 바꾸고 새로고침 후 다시 시도하세요.\n\n폰: 설정 > 앱 > 브라우저 > 권한 > 위치 허용");
-        } else {
-          alert("위치 가져오기 실패: " + err.message + "\n\n팁: 핸드폰 설정 > 위치 서비스 켜기, 브라우저 위치 허용을 확인하세요.");
+      });
+    };
+
+    await clearLocationWatch();
+    try {
+      localStorage.setItem(SHARING_KEY, "1");
+    } catch {}
+    setSharing(true);
+    // Capacitor 먼저, 실패하면 웹 geolocation
+    let ok = await useCapacitor();
+    if (!ok) ok = await useWebGeo();
+    if (!ok) {
+      setSharing(false);
+      try {
+        localStorage.removeItem(SHARING_KEY);
+      } catch {}
+      return false;
+    }
+    // watch가 멈추거나 스로틀되는 브라우저 대비 폴백: 20초마다 1회 강제 갱신
+    if (fallbackTimerRef.current) clearInterval(fallbackTimerRef.current);
+    fallbackTimerRef.current = setInterval(async () => {
+      if (!sharingRef.current) return;
+      const last = lastSentRef.current;
+      if (last && Date.now() - last.t < 20000) return;
+      try {
+        try {
+          const { Geolocation } = await import("@capacitor/geolocation");
+          const pos = await Geolocation.getCurrentPosition({ enableHighAccuracy: true, timeout: 12000, maximumAge: 0 } as any);
+          await onWatchPos(pos.coords.latitude, pos.coords.longitude);
+          return;
+        } catch {}
+        if ("geolocation" in navigator) {
+          navigator.geolocation.getCurrentPosition(
+            (p) => onWatchPos(p.coords.latitude, p.coords.longitude),
+            () => {},
+            { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+          );
         }
-      },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-    );
+      } catch {}
+    }, 20000);
+    // 화면 WakeLock 시도 (모바일 백그라운드 스로틀 완화, 실패해도 무시)
+    try {
+      const nav: any = navigator as any;
+      if (nav.wakeLock && nav.wakeLock.request) {
+        nav.wakeLock.request("screen").catch(() => {});
+      }
+    } catch {}
+    // 네이티브 포그라운드 서비스 (상시 알림 + GPS) — 앱을 꺼도 전송 지속.
+    // 실패하면 false (웹 watch만으로 동작, 기존과 동일).
+    try {
+      const okNative = await startNativeTracking();
+      setNativeBg(okNative);
+      if (okNative && !silent) {
+        triggerAlarm({ title: "📱 백그라운드 추적 ON", body: "상태바에 ‘위치 공유 중’ 알림이 뜨고, 앱을 꺼도 위치가 계속 전송돼요.", type: "schedule" });
+      }
+    } catch {
+      setNativeBg(false);
+    }
+    console.log("[geo] 위치 공유 + 실시간 자동 추적 시작 (자동재개 ON)");
+    return true;
   };
+
+  const stopTracking = async () => {
+    await clearLocationWatch();
+    try {
+      await stopNativeTracking();
+    } catch {}
+    setNativeBg(false);
+    setSharing(false);
+    try {
+      localStorage.removeItem(SHARING_KEY);
+    } catch {}
+    try {
+      await fetch("/api/location", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sharing: false }) });
+      await refresh();
+    } catch {}
+    triggerAlarm({ title: "📍 위치 공유 중단", body: "내 위치 추적을 껐어요. 지도의 마지막 위치는 그대로 남아요.", type: "schedule" });
+  };
+
+  const shareLocation = async () => {
+    if (sharing) return stopTracking();
+    await startTracking({ silent: false });
+    setTab("map");
+  };
+
+  // 앱/웹 재진입 시 자동 재개: localStorage 의도 or 서버 플래그가 켜져 있으면 버튼 없이 시작
+  const autoResumeTried = useRef(false);
+  useEffect(() => {
+    // 네이티브 서비스가 이미 살아 있으면(앱 재실행 등) 상태만 동기화
+    isNativeTracking().then((r) => setNativeBg(r)).catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (!user || autoResumeTried.current) return;
+    let want = false;
+    try {
+      want = localStorage.getItem(SHARING_KEY) === "1";
+    } catch {}
+    if (!want && (user as any).locationSharing) want = true;
+    if (want) {
+      autoResumeTried.current = true;
+      setSharing(true);
+      startTracking({ silent: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  // 포그라운드 복귀/온라인 복귀 시: 추적 죽어 있으면 재시작 + 멤버 위치 새로고침
+  useEffect(() => {
+    const revive = async () => {
+      const gid = groupRef.current?.id;
+      if (gid) {
+        try {
+          const res = await fetch(`/api/location?groupId=${gid}`, { cache: "no-store" });
+          const data = await res.json();
+          if (data.members) setMembersLoc(data.members || []);
+        } catch {}
+      }
+      let want = false;
+      try {
+        want = localStorage.getItem(SHARING_KEY) === "1";
+      } catch {}
+      if (want && watchIdRef.current === null && !document.hidden) {
+        console.log("[geo] 복귀 감지 → 추적 재시작");
+        setSharing(true);
+        startTracking({ silent: true });
+      }
+    };
+    const onVis = () => {
+      if (document.visibilityState === "visible") revive();
+    };
+    const onFocus = () => revive();
+    const onOnline = () => revive();
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("online", onOnline);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("online", onOnline);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     return () => {
-      if (watchIdRef.current !== null) navigator.geolocation.clearWatch(watchIdRef.current);
+      // 언마운트 시에도 의도(localStorage)는 유지 — 다음 진입 시 자동 재개.
+      // 실제 watch만 정리 (브라우저가 어차피 죽이지만 명시적 정리)
+      if (watchIdRef.current !== null && typeof watchIdRef.current === "number") {
+        try {
+          navigator.geolocation.clearWatch(watchIdRef.current);
+        } catch {}
+      }
+      if (fallbackTimerRef.current) clearInterval(fallbackTimerRef.current);
     };
   }, []);
   const shareChuncheon = async () => {
     setSharing(true);
+    try {
+      localStorage.setItem(SHARING_KEY, "1");
+    } catch {}
     const lat = 37.8813, lng = 127.7298;
     let address = "강원특별자치도 춘천시 중앙로 (춘천 시청附近)";
     try {
@@ -1086,7 +1322,7 @@ export default function Dashboard() {
       const j = await r.json();
       if (j.display_name) address = j.display_name;
     } catch {}
-    const res = await fetch("/api/location", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lat, lng, address }) });
+    const res = await fetch("/api/location", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lat, lng, address, sharing: true }) });
     setSharing(false);
     if (!res.ok) return alert("위치 공유 실패");
     setCoords({ lat, lng });
@@ -1202,6 +1438,14 @@ export default function Dashboard() {
   };
 
   const logout = async () => {
+    // 로그아웃 시 네이티브 서비스도 중단 (쿠키 무효라 401만 쌓이는 것 방지)
+    try {
+      await clearLocationWatch();
+    } catch {}
+    try {
+      await stopNativeTracking();
+    } catch {}
+    setNativeBg(false);
     await fetch("/api/auth/logout", { method: "POST" });
     location.href = "/auth";
   };
@@ -1785,50 +2029,68 @@ export default function Dashboard() {
               <div className="bg-white rounded-[24px] border border-[#FFE0CC] shadow-sm overflow-hidden">
                 <div className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div>
-                    <h3 className="font-black flex items-center gap-2">🗺️ 가족 위치 공유</h3>
+                    <h3 className="font-black flex items-center gap-2">🗺️ 가족 위치 공유 {sharing && <span className="text-[11px] bg-[#00B894] text-white px-2 py-0.5 rounded-full animate-pulse">추적 중</span>}</h3>
                     <p className="text-xs text-[#636E72] mt-1">지도에서 우리 가족이 지금 어디에 있는지 확인해요. 위치는 실시간으로 업데이트돼요.</p>
                   </div>
                   <div className="flex gap-2 flex-wrap">
-                    <button onClick={shareLocation} disabled={sharing} className="px-5 py-3 rounded-2xl bg-[#4ECDC4] text-white font-black text-sm shadow disabled:opacity-60">
-                      {sharing ? "공유 중..." : "📍 위치 공유"}
+                    <button onClick={shareLocation} className={`px-5 py-3 rounded-2xl font-black text-sm shadow ${sharing ? "bg-[#FFE3E3] text-[#C0392B] border border-[#FFB5B5]" : "bg-[#4ECDC4] text-white"}`}>
+                      {sharing ? "⏸️ 공유 중단" : "📍 위치 공유"}
                     </button>
                     <button onClick={recenterMap} className="px-4 py-3 rounded-2xl bg-white text-[#636E72] font-black text-sm shadow border border-[#FFE0CC]">
                       🎯 내 위치로
                     </button>
                   </div>
-                  <div className="mt-2 text-xs text-[#636E72]">위치 공유 한 번이면 이후 이동 시 5초/10m마다 자동 추적. <span className="font-bold text-[#FF6B6B]">웹은 사이트가 켜져 있을 때만</span>, <span className="font-bold text-[#00B894]">앱은 꺼져도 계속 동기화</span> — <a href="/download" className="underline text-[#4ECDC4] font-bold">앱 설치하기</a></div>
+                  <div className="mt-2 text-xs text-[#636E72]">공유를 켜두면 이동 시 5초/10m마다 자동 추적되고, <span className="font-bold">앱·웹을 다시 열면 버튼 없이 자동 재개</span>돼요. {nativeBg ? <span className="font-bold text-[#00B894]">📱 백그라운드 서비스 동작 중 — 앱을 꺼도 계속 전송돼요.</span> : <span><span className="font-bold text-[#FF6B6B]">웹에서는 완전히 꺼져 있는 동안의 이동은 기록되지 않아 다시 켜질 때 최신 위치로 갱신</span>돼요 — <a href="/download" className="underline text-[#4ECDC4] font-bold">앱 설치하기</a></span>}</div>
+                  {sharing && !nativeBg && <div className="mt-2 text-xs bg-[#E0F7F4] text-[#00897B] px-3 py-2 rounded-xl font-bold">✅ 자동 추적 ON — 이 상태로 두면 나갔다 들어와도 다시 버튼을 누를 필요 없어요. 끄려면 ‘공유 중단’을 누르세요.</div>}
+                  {sharing && nativeBg && <div className="mt-2 text-xs bg-[#E0F7F4] text-[#00897B] px-3 py-2 rounded-xl font-bold">📱 백그라운드 서비스 동작 중 — 상태바에 ‘위치 공유 중’ 알림이 뜨는 동안은 앱을 꺼도 위치가 계속 전송돼요. 끄려면 ‘공유 중단’을 누르세요.</div>}
                   {geoError && <div className="mt-2 text-xs bg-[#FFE3E3] text-[#C0392B] px-3 py-2 rounded-xl font-bold">{geoError}</div>}
                 </div>
                 {coords && <div className="px-4 py-2 bg-[#FFF8F0] border-b border-[#FFE0CC] text-xs flex items-center gap-2"><span className="w-2 h-2 bg-[#00B894] rounded-full animate-pulse" /> 현재 기준: {coords.lat.toFixed(4)}, {coords.lng.toFixed(4)} {Math.abs(coords.lat-37.8813)<0.01 ? "(춘천)" : Math.abs(coords.lat-37.5665)<0.01 ? "(서울 - 권한 거부 시 기본값)" : ""} <button onClick={() => setCoords(null)} className="ml-auto text-[#FF6B6B] font-bold underline">다시 가져오기</button></div>}
                 <div ref={mapRef} className="w-full h-[320px] sm:h-[420px] bg-[#E8F5F3] relative" />
                 <div className="p-3 bg-[#FFFBF5] border-t border-[#FFE0CC] flex flex-wrap gap-2">
-                  {membersLoc.map((m) => (
-                    <div key={m.id} className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold ${m.location ? "bg-white border-[#4ECDC4]/30" : "bg-[#F1F2F6] border-[#E5E7EB] text-[#636E72]"}`}>
-                      <div className="w-6 h-6 rounded-full overflow-hidden bg-[#FFE8D6] flex items-center justify-center text-xs font-black">
-                        {m.avatar ? <img src={m.avatar} className="w-full h-full object-cover" /> : m.realName.slice(0, 1)}
+                  {membersLoc.map((m) => {
+                    const age = m.location ? locAgeSec(m.location.updatedAt) : Infinity;
+                    const stale = !m.location || age > 300;
+                    const veryStale = !m.location || age > 900;
+                    return (
+                      <div key={m.id} className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs font-bold ${m.location && !stale ? "bg-white border-[#4ECDC4]/30" : m.location ? "bg-[#FFF8F0] border-[#FFD1C1]" : "bg-[#F1F2F6] border-[#E5E7EB] text-[#636E72]"}`}>
+                        <div className="w-6 h-6 rounded-full overflow-hidden bg-[#FFE8D6] flex items-center justify-center text-xs font-black">
+                          {m.avatar ? <img src={m.avatar} className="w-full h-full object-cover" /> : m.realName.slice(0, 1)}
+                        </div>
+                        {m.realName}
+                        {m.location ? (
+                          <span className="flex items-center gap-1">
+                            <span className={`w-2 h-2 rounded-full ${veryStale ? "bg-[#C0392B]" : stale ? "bg-[#F39C12]" : "bg-[#00B894] animate-pulse"}`} />
+                            <span className={`text-[10px] ${veryStale ? "text-[#C0392B]" : stale ? "text-[#E67E22]" : "text-[#00B894]"}`}>{timeAgo(m.location.updatedAt)}{stale ? " · 오래됨" : ""}</span>
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-[#B2BEC3]">{m.sharing ? "켜짐·신호대기" : "미공유"}</span>
+                        )}
                       </div>
-                      {m.realName}
-                      {m.location ? <span className="w-2 h-2 bg-[#00B894] rounded-full animate-pulse" /> : <span className="text-[10px] text-[#B2BEC3]">미공유</span>}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 
               <div className="grid sm:grid-cols-2 gap-3">
                 {membersLoc
                   .filter((m) => m.location)
-                  .map((m) => (
-                    <div key={m.id} className="bg-white rounded-2xl border border-[#FFE0CC] p-4 flex gap-3">
-                      <div className="w-12 h-12 rounded-2xl overflow-hidden bg-[#FFE8D6] flex items-center justify-center font-black shrink-0">
-                        {m.avatar ? <img src={m.avatar} className="w-full h-full object-cover" /> : m.realName.slice(0, 1)}
+                  .map((m) => {
+                    const age = locAgeSec(m.location.updatedAt);
+                    const stale = age > 300;
+                    return (
+                      <div key={m.id} className="bg-white rounded-2xl border border-[#FFE0CC] p-4 flex gap-3">
+                        <div className="w-12 h-12 rounded-2xl overflow-hidden bg-[#FFE8D6] flex items-center justify-center font-black shrink-0">
+                          {m.avatar ? <img src={m.avatar} className="w-full h-full object-cover" /> : m.realName.slice(0, 1)}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-black text-sm">{m.realName} {m.id===user.id && <span className="text-[#FF6B6B]">(나)</span>} {stale && <span className="ml-1 text-[10px] bg-[#FFE3E3] text-[#C0392B] px-2 py-0.5 rounded-full">오래된 위치</span>}</div>
+                          <div className="text-xs text-[#636E72] truncate">{m.location.address || `${m.location.lat.toFixed(4)}, ${m.location.lng.toFixed(4)}`}</div>
+                          <div className="text-[11px] text-[#B2BEC3]">{m.location.updatedAt ? `${new Date(m.location.updatedAt).toLocaleString()} (${timeAgo(m.location.updatedAt)})` : ""}{stale ? " — 상대가 앱을 다시 열면 최신으로 갱신돼요" : ""}</div>
+                        </div>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="font-black text-sm">{m.realName} {m.id===user.id && <span className="text-[#FF6B6B]">(나)</span>}</div>
-                        <div className="text-xs text-[#636E72] truncate">{m.location.address || `${m.location.lat.toFixed(4)}, ${m.location.lng.toFixed(4)}`}</div>
-                        <div className="text-[11px] text-[#B2BEC3]">{m.location.updatedAt ? new Date(m.location.updatedAt).toLocaleString() : ""}</div>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
               </div>
             </div>
 
