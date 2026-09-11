@@ -1746,9 +1746,8 @@ export default function Dashboard() {
 
         {/* main content */}
         <main className="flex-1 min-w-0 p-3 sm:p-4 pb-20 lg:pb-4">
-          {/* CHAT TAB */}
-          {tab === "chat" && (
-            <div className="h-[calc(100vh-120px)] lg:h-[calc(100vh-92px)] bg-white rounded-[24px] border border-[#FFE0CC] shadow-sm flex flex-col overflow-hidden">
+          {/* CHAT TAB — hidden 마운트 유지: 다른 탭 갔다 와도 스크롤 위치 보존 (리마운트 시 맨 위로 가는 버그 방지) */}
+          <div className={`h-[calc(100vh-120px)] lg:h-[calc(100vh-92px)] bg-white rounded-[24px] border border-[#FFE0CC] shadow-sm flex-col overflow-hidden ${tab === "chat" ? "flex" : "hidden"}`}>
               {/* chat header */}
               <div className="px-4 sm:px-5 py-3 border-b border-[#FFE0CC] flex items-center justify-between bg-[#FFFDF8]">
                 <div className="flex items-center gap-2">
@@ -1946,11 +1945,10 @@ export default function Dashboard() {
                   전송
                 </button>
               </div>
-            </div>
-          )}
+          </div>
 
-          {tab === "dm" && (
-            <div className="h-[calc(100vh-120px)] lg:h-[calc(100vh-92px)] bg-white rounded-[24px] border border-[#FFE0CC] shadow-sm flex overflow-hidden">
+          {/* DM TAB — 동일하게 hidden 마운트 유지 */}
+          <div className={`h-[calc(100vh-120px)] lg:h-[calc(100vh-92px)] bg-white rounded-[24px] border border-[#FFE0CC] shadow-sm overflow-hidden ${tab === "dm" ? "flex" : "hidden"}`}>
               {/* members list */}
               <div className="w-[160px] sm:w-[220px] border-r border-[#FFE0CC] bg-[#FFFBF5] flex flex-col">
                 <div className="p-3 border-b border-[#FFE0CC] bg-white">
@@ -2022,8 +2020,7 @@ export default function Dashboard() {
                   </>
                 )}
               </div>
-            </div>
-          )}
+          </div>
 
           <div className={`space-y-4 ${tab === "map" ? "block" : "hidden"}`}>
               <div className="bg-white rounded-[24px] border border-[#FFE0CC] shadow-sm overflow-hidden">
